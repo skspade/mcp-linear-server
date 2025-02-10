@@ -1,2 +1,1 @@
-# mcp-linear-server
-A repository for MCP server to connect to Linear
+This repository is empty. Any task executed on it should be considered a new capability and needs to be created.
