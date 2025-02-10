@@ -60,3 +60,22 @@ To ensure compatibility with Cline or Claude Desktop, follow these steps:
 3. Ensure that the MCP server is running and accessible at `http://localhost:3000`.
 4. In Cline or Claude Desktop, configure the application to connect to the MCP server at `http://localhost:3000`.
 5. Test the connection and functionality to ensure everything is working as expected.
+
+## Creating a Ticket
+
+To create a ticket, send a POST request to the `/create-ticket` endpoint with the following JSON body:
+
+```json
+{
+  "title": "Ticket Title",
+  "description": "Ticket Description"
+}
+```
+
+The server will respond with the created ticket details.
+
+## Searching for a Ticket by ID
+
+To search for a ticket by ID, send a GET request to the `/ticket/:id` endpoint, where `:id` is the ID of the ticket you want to search for.
+
+The server will respond with the ticket details.
