@@ -14,7 +14,7 @@ const port = process.env.PORT || 3000;
 // Validate environment variables
 const envSchema = z.object({
   LINEAR_API_KEY: z.string().min(1),
-  LINEAR_TEAM_ID: z.string().min(1),
+  LINEAR_TEAM_ID: z.string().min(1).optional(),
 });
 
 const envValidation = envSchema.safeParse(process.env);
@@ -55,10 +55,22 @@ interface ApiError extends Error {
 // Routes
 app.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    let teamId = process.env.LINEAR_TEAM_ID;
+    
+    // If no team ID is provided, get the first team the user has access to
+    if (!teamId) {
+      const teams = await linearClient.teams();
+      const firstTeam = teams.nodes[0];
+      if (!firstTeam) {
+        throw new Error('No teams found for this user');
+      }
+      teamId = firstTeam.id;
+    }
+
     const issues = await linearClient.issues({
       first: 100,
       filter: {
-        team: { id: { eq: process.env.LINEAR_TEAM_ID } }
+        team: { id: { eq: teamId } }
       }
     });
     res.json(issues);
@@ -71,9 +83,21 @@ app.post('/create-ticket', async (req: Request, res: Response, next: NextFunctio
   try {
     const validatedData = createTicketSchema.parse(req.body);
     
+    let teamId = process.env.LINEAR_TEAM_ID;
+    
+    // If no team ID is provided, get the first team the user has access to
+    if (!teamId) {
+      const teams = await linearClient.teams();
+      const firstTeam = teams.nodes[0];
+      if (!firstTeam) {
+        throw new Error('No teams found for this user');
+      }
+      teamId = firstTeam.id;
+    }
+
     const issue = await linearClient.createIssue({
       ...validatedData,
-      teamId: process.env.LINEAR_TEAM_ID as string,
+      teamId,
     });
     
     res.status(201).json(issue);
