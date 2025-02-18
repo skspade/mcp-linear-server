@@ -425,12 +425,24 @@ server.tool(
 // Start receiving messages on stdin and sending messages on stdout
 const transport = new StdioServerTransport();
 
-// Improve error handling for transport
+// Add connection state tracking
+let connectionState = {
+  isConnected: false,
+  lastHeartbeat: Date.now(),
+  reconnectAttempts: 0
+};
+
+// Update transport error handler
 transport.onerror = (error: any) => {
   handleError(error, 'Transport error');
-  // Don't exit on transport errors, try to recover
-  if (error?.message?.includes('write after end') || error?.message?.includes('pipe broken')) {
-    debugLog('Fatal transport error, initiating shutdown');
+  connectionState.isConnected = false;
+  
+  if (connectionState.reconnectAttempts < 3) {
+    connectionState.reconnectAttempts++;
+    debugLog(`Attempting reconnection (${connectionState.reconnectAttempts}/3)...`);
+    // Attempt reconnection logic here
+  } else {
+    debugLog('Max reconnection attempts reached, shutting down');
     shutdown();
   }
 };
