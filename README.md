@@ -22,6 +22,17 @@ Returns the active sprint/cycle details and all its tickets. The response includ
 - Cycle information (name, start date, end date)
 - All tickets in the current sprint
 
+### Filter Sprint Issues
+```http
+GET /filter-sprint-issues
+```
+Filters issues in the current sprint by status and automatically filters to the current user. The response includes:
+- Current sprint details (name, dates)
+- All matching issues with their status and URLs
+Required parameters:
+- teamId: The Linear team ID
+- status: The status to filter by (e.g. "Pending Prod Release")
+
 ### Create New Ticket
 ```http
 POST /create-ticket

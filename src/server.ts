@@ -102,6 +102,14 @@ const server = new McpServer({
         parameters: {
           query: { type: 'string', description: 'Optional text to search in team names' }
         }
+      },
+      'linear_filter_sprint_issues': {
+        description: 'Filter current sprint issues by status and optionally by assignee',
+        parameters: {
+          teamId: { type: 'string', description: 'Team ID to get sprint issues for' },
+          status: { type: 'string', description: 'Status to filter by (e.g. "Pending Prod Release")' }
+        },
+        required: ['teamId', 'status']
       }
     }
   }
@@ -286,6 +294,80 @@ server.tool(
       };
     } catch (error) {
       handleError(error, 'Failed to search teams');
+      throw error;
+    }
+  }
+);
+
+server.tool(
+  'linear_filter_sprint_issues',
+  {
+    teamId: z.string().describe('Team ID to get sprint issues for'),
+    status: z.string().describe('Status to filter by')
+  },
+  async (params) => {
+    try {
+      debugLog('Filtering sprint issues with params:', params);
+      
+      // Get current user info
+      const viewer = await linearClient.viewer;
+      debugLog('Current user:', viewer.id);
+      
+      // Get the team's current cycle (sprint)
+      const cycles = await linearClient.cycles({
+        filter: {
+          team: { id: { eq: params.teamId } },
+          isActive: { eq: true }
+        }
+      });
+      
+      if (!cycles.nodes.length) {
+        return {
+          content: [{
+            type: 'text',
+            text: 'No active sprint found for this team.'
+          }]
+        };
+      }
+
+      const currentCycle = cycles.nodes[0];
+      
+      // Get filtered issues in the current cycle
+      const issues = await linearClient.issues({
+        filter: {
+          team: { id: { eq: params.teamId } },
+          cycle: { id: { eq: currentCycle.id } },
+          state: { name: { eq: params.status } },
+          assignee: { id: { eq: viewer.id } }
+        }
+      });
+
+      debugLog(`Found ${issues.nodes.length} matching issues in current sprint`);
+
+      if (issues.nodes.length === 0) {
+        return {
+          content: [{
+            type: 'text',
+            text: `No issues found with status "${params.status}" assigned to you in the current sprint.`
+          }]
+        };
+      }
+
+      const issueList = await Promise.all(
+        issues.nodes.map(async (issue) => {
+          const state = await issue.state;
+          return `${issue.identifier}: ${issue.title}\n  Status: ${state?.name ?? 'No status'}\n  URL: ${issue.url}`;
+        })
+      );
+
+      return {
+        content: [{
+          type: 'text',
+          text: `Current Sprint: ${currentCycle.name}\nStart: ${new Date(currentCycle.startsAt).toLocaleDateString()}\nEnd: ${new Date(currentCycle.endsAt).toLocaleDateString()}\n\nYour Issues with Status "${params.status}":\n\n${issueList.join('\n\n')}`
+        }]
+      };
+    } catch (error) {
+      handleError(error, 'Failed to filter sprint issues');
       throw error;
     }
   }
