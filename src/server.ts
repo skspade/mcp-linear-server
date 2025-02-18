@@ -21,9 +21,18 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 
 // Configuration constants
 const DEBUG = true;
-const API_TIMEOUT_MS = 10000; // 10 second timeout for API calls
-const HEARTBEAT_INTERVAL_MS = 15000; // 15 second heartbeat interval
+const API_TIMEOUT_MS = 30000; // Increased to 30 second timeout for API calls
+const HEARTBEAT_INTERVAL_MS = 10000; // Reduced to 10 second heartbeat interval
 const SHUTDOWN_GRACE_PERIOD_MS = 5000; // 5 second grace period for shutdown
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_DELAY_MS = 2000;
+
+// Connection state tracking
+const connectionState = {
+  isConnected: false,
+  reconnectAttempts: 0,
+  lastHeartbeat: Date.now(),
+};
 
 // Utility to create a timeout promise
 function createTimeout(ms: number, message: string) {
@@ -422,46 +431,74 @@ server.tool(
   }
 );
 
-// Start receiving messages on stdin and sending messages on stdout
+// Create and configure transport
 const transport = new StdioServerTransport();
 
-// Add connection state tracking
-let connectionState = {
-  isConnected: false,
-  lastHeartbeat: Date.now(),
-  reconnectAttempts: 0
-};
-
-// Update transport error handler
-transport.onerror = (error: any) => {
+transport.onerror = async (error: any) => {
   handleError(error, 'Transport error');
-  connectionState.isConnected = false;
-  
-  if (connectionState.reconnectAttempts < 3) {
+  if (connectionState.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
     connectionState.reconnectAttempts++;
-    debugLog(`Attempting reconnection (${connectionState.reconnectAttempts}/3)...`);
-    // Attempt reconnection logic here
+    debugLog(`Attempting reconnection (${connectionState.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+    setTimeout(async () => {
+      try {
+        await server.connect(transport);
+        connectionState.isConnected = true;
+        debugLog('Reconnection successful');
+      } catch (reconnectError) {
+        handleError(reconnectError, 'Reconnection failed');
+        if (connectionState.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+          debugLog('Max reconnection attempts reached, shutting down');
+          await shutdown();
+        }
+      }
+    }, RECONNECT_DELAY_MS);
   } else {
     debugLog('Max reconnection attempts reached, shutting down');
-    shutdown();
+    await shutdown();
   }
 };
 
-// Add timeout handling
-let timeoutHandler: NodeJS.Timeout;
-let heartbeatInterval: NodeJS.Timeout;
+transport.onmessage = async (message: any) => {
+  try {
+    debugLog('Received message:', message?.method);
+    
+    if (message?.method === 'initialize') {
+      debugLog('Handling initialize request');
+      connectionState.isConnected = true;
+      connectionState.lastHeartbeat = Date.now();
+    } else if (message?.method === 'initialized') {
+      debugLog('Connection fully initialized');
+      connectionState.isConnected = true;
+    } else if (message?.method === 'server/heartbeat') {
+      connectionState.lastHeartbeat = Date.now();
+      debugLog('Heartbeat received');
+    }
+
+    // Set up heartbeat check
+    const heartbeatCheck = setInterval(() => {
+      const timeSinceLastHeartbeat = Date.now() - connectionState.lastHeartbeat;
+      if (timeSinceLastHeartbeat > HEARTBEAT_INTERVAL_MS * 2) {
+        debugLog('No heartbeat received, attempting reconnection');
+        clearInterval(heartbeatCheck);
+        if (transport && transport.onerror) {
+          transport.onerror(new Error('Heartbeat timeout'));
+        }
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+
+    // Clear heartbeat check on process exit
+    process.on('beforeExit', () => {
+      clearInterval(heartbeatCheck);
+    });
+  } catch (error) {
+    handleError(error, 'Message handling error');
+    throw error;
+  }
+};
 
 // Handle graceful shutdown
 const shutdown = async () => {
   debugLog('Shutting down gracefully...');
-  
-  // Clear all intervals
-  if (timeoutHandler) clearTimeout(timeoutHandler);
-  if (heartbeatInterval) clearInterval(heartbeatInterval);
-
-  // Allow time for in-flight requests to complete
-  debugLog(`Waiting ${SHUTDOWN_GRACE_PERIOD_MS}ms for in-flight requests...`);
-  await new Promise(resolve => setTimeout(resolve, SHUTDOWN_GRACE_PERIOD_MS));
   
   // Close transport
   try {
@@ -503,74 +540,8 @@ try {
 try {
   debugLog('Connecting to MCP transport...');
   
-  // Handle initialization and messages
-  transport.onmessage = async (message: any) => {
-    debugLog('Received message:', message);
-    
-    // Reset timeout on any message
-    if (timeoutHandler) {
-      clearTimeout(timeoutHandler);
-    }
-    
-    if (message?.method === 'initialize') {
-      debugLog('Handling initialization request');
-      transport.send({
-        jsonrpc: '2.0',
-        id: message.id,
-        result: {
-          protocolVersion: '2024-11-05',
-          serverInfo: {
-            name: 'linear-mcp-server',
-            version: '1.0.0'
-          }
-        }
-      });
-    }
-    
-    // Handle heartbeat messages
-    if (message?.method === 'server/heartbeat') {
-      debugLog('Received heartbeat request');
-      transport.send({
-        jsonrpc: '2.0',
-        id: message.id,
-        result: { alive: true }
-      });
-    }
-    
-    // Set new timeout
-    timeoutHandler = setTimeout(() => {
-      debugLog('Connection idle, sending keepalive');
-      try {
-        transport.send({
-          jsonrpc: '2.0',
-          method: 'server/keepalive',
-          params: { timestamp: new Date().toISOString() }
-        });
-      } catch (error) {
-        handleError(error, 'Failed to send keepalive');
-      }
-    }, HEARTBEAT_INTERVAL_MS);
-  };
-
   await server.connect(transport);
   
-  // Start regular heartbeat
-  heartbeatInterval = setInterval(() => {
-    try {
-      transport.send({
-        jsonrpc: '2.0',
-        method: 'server/keepalive',
-        params: { timestamp: new Date().toISOString() }
-      });
-    } catch (error: any) {
-      debugLog('Heartbeat failed:', error);
-      // If heartbeat fails multiple times, consider shutting down
-      if (error?.message?.includes('write after end') || error?.message?.includes('pipe broken')) {
-        shutdown();
-      }
-    }
-  }, HEARTBEAT_INTERVAL_MS);
-
   debugLog('MCP server connected and ready');
 } catch (error) {
   handleError(error, 'Failed to connect MCP server');
