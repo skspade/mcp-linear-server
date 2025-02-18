@@ -294,6 +294,30 @@ server.tool(
 // Start receiving messages on stdin and sending messages on stdout
 const transport = new StdioServerTransport();
 
+// Improve error handling for transport
+transport.onerror = (error: any) => {
+  handleError(error, 'Transport error');
+  // Don't exit on transport errors, try to recover
+};
+
+// Add timeout handling
+let timeoutHandler: NodeJS.Timeout;
+
+// Handle graceful shutdown
+const shutdown = async () => {
+  debugLog('Shutting down gracefully...');
+  if (timeoutHandler) {
+    clearTimeout(timeoutHandler);
+  }
+  // Allow time for final messages to be sent
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  process.exit(0);
+};
+
+// Update signal handlers
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+
 // Verify Linear API connection before starting server
 try {
   debugLog('Verifying Linear API connection...');
@@ -308,78 +332,61 @@ try {
 try {
   debugLog('Connecting to MCP transport...');
   
-  // Set up message logging
-  transport.onmessage = (message: any) => {
+  // Handle initialization and messages
+  transport.onmessage = async (message: any) => {
     debugLog('Received message:', message);
-  };
-  
-  await server.connect(transport);
-  debugLog('MCP server connected and ready');
-  
-  // Send server info
-  transport.send({
-    jsonrpc: '2.0',
-    method: 'server/info',
-    params: {
-      name: 'linear-mcp-server',
-      version: '1.0.0',
-      capabilities: {
-        tools: {
-          'linear_create_issue': {
-            description: 'Create a new Linear issue',
-            parameters: {
-              title: { type: 'string', description: 'Issue title' },
-              description: { type: 'string', description: 'Issue description (markdown supported)' },
-              teamId: { type: 'string', description: 'Team ID to create issue in' },
-              priority: { type: 'number', description: 'Priority level (0-4)', minimum: 0, maximum: 4 },
-              status: { type: 'string', description: 'Initial status name' }
-            },
-            required: ['title', 'teamId']
-          },
-          'linear_search_issues': {
-            description: 'Search Linear issues with flexible filtering',
-            parameters: {
-              query: { type: 'string', description: 'Text to search in title/description' },
-              teamId: { type: 'string', description: 'Filter by team' },
-              status: { type: 'string', description: 'Filter by status' },
-              assigneeId: { type: 'string', description: 'Filter by assignee' },
-              priority: { type: 'number', description: 'Priority level (0-4)', minimum: 0, maximum: 4 },
-              limit: { type: 'number', description: 'Max results', default: 10 }
-            }
-          },
-          'linear_sprint_issues': {
-            description: 'Get all issues in the current sprint/iteration',
-            parameters: {
-              teamId: { type: 'string', description: 'Team ID to get sprint issues for' }
-            },
-            required: ['teamId']
-          },
-          'linear_search_teams': {
-            description: 'Search and retrieve Linear teams',
-            parameters: {
-              query: { type: 'string', description: 'Optional text to search in team names' }
-            }
+    
+    if (message?.method === 'initialize') {
+      debugLog('Handling initialization request');
+      transport.send({
+        jsonrpc: '2.0',
+        id: message.id,
+        result: {
+          protocolVersion: '2024-11-05',
+          serverInfo: {
+            name: 'linear-mcp-server',
+            version: '1.0.0'
           }
         }
-      }
+      });
     }
-  });
-  
+    
+    // Handle heartbeat messages
+    if (message?.method === 'server/heartbeat') {
+      debugLog('Received heartbeat request');
+      transport.send({
+        jsonrpc: '2.0',
+        id: message.id,
+        result: { alive: true }
+      });
+    }
+    
+    // Reset timeout on any message
+    if (timeoutHandler) {
+      clearTimeout(timeoutHandler);
+    }
+    
+    // Set new timeout
+    timeoutHandler = setTimeout(() => {
+      debugLog('Connection idle, sending keepalive');
+      try {
+        transport.send({
+          jsonrpc: '2.0',
+          method: 'server/keepalive',
+          params: { timestamp: new Date().toISOString() }
+        });
+      } catch (error) {
+        handleError(error, 'Failed to send keepalive');
+      }
+    }, 30000); // Send keepalive every 30 seconds
+  };
+
+  await server.connect(transport);
+  debugLog('MCP server connected and ready');
 } catch (error) {
   handleError(error, 'Failed to connect MCP server');
   process.exit(1);
 }
-
-// Handle process signals
-process.on('SIGINT', () => {
-  debugLog('Received SIGINT, shutting down...');
-  process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-  debugLog('Received SIGTERM, shutting down...');
-  process.exit(0);
-});
 
 // Keep the process alive and handle errors
 process.stdin.resume();

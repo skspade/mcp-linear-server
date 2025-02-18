@@ -8,7 +8,8 @@
     "dev": "nodemon --exec 'node --loader ts-node/esm' src/server.ts",
     "build": "tsc",
     "lint": "eslint . --ext .ts",
-    "test": "jest"
+    "test": "jest",
+    "inspect": "npm run build && npx @modelcontextprotocol/inspector stdio --command \"node\" --args \"dist/server.js\""
   },
   "dependencies": {
     "@linear/sdk": "^2.6.0",
