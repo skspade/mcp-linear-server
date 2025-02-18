@@ -89,6 +89,19 @@ const server = new McpServer({
           priority: { type: 'number', description: 'Priority level (0-4)', minimum: 0, maximum: 4 },
           limit: { type: 'number', description: 'Max results', default: 10 }
         }
+      },
+      'linear_sprint_issues': {
+        description: 'Get all issues in the current sprint/iteration',
+        parameters: {
+          teamId: { type: 'string', description: 'Team ID to get sprint issues for' }
+        },
+        required: ['teamId']
+      },
+      'linear_search_teams': {
+        description: 'Search and retrieve Linear teams',
+        parameters: {
+          query: { type: 'string', description: 'Optional text to search in team names' }
+        }
       }
     }
   }
@@ -174,6 +187,110 @@ server.tool(
   }
 );
 
+server.tool(
+  'linear_sprint_issues',
+  {
+    teamId: z.string().describe('Team ID to get sprint issues for')
+  },
+  async (params) => {
+    try {
+      debugLog('Fetching current sprint issues for team:', params.teamId);
+      
+      // Get the team's current cycle (sprint)
+      const team = await linearClient.team(params.teamId);
+      const cycles = await linearClient.cycles({
+        filter: {
+          team: { id: { eq: params.teamId } },
+          isActive: { eq: true }
+        }
+      });
+      
+      if (!cycles.nodes.length) {
+        return {
+          content: [{
+            type: 'text',
+            text: 'No active sprint found for this team.'
+          }]
+        };
+      }
+
+      const currentCycle = cycles.nodes[0];
+      
+      // Get all issues in the current cycle
+      const issues = await linearClient.issues({
+        filter: {
+          team: { id: { eq: params.teamId } },
+          cycle: { id: { eq: currentCycle.id } }
+        }
+      });
+
+      debugLog(`Found ${issues.nodes.length} issues in current sprint`);
+
+      const issueList = await Promise.all(
+        issues.nodes.map(async (issue) => {
+          const state = await issue.state;
+          const assignee = await issue.assignee;
+          return `${issue.identifier}: ${issue.title} (${state?.name ?? 'No status'})${assignee ? ` - Assigned to: ${assignee.name}` : ''}`;
+        })
+      );
+
+      return {
+        content: [{
+          type: 'text',
+          text: `Current Sprint: ${currentCycle.name}\nStart: ${new Date(currentCycle.startsAt).toLocaleDateString()}\nEnd: ${new Date(currentCycle.endsAt).toLocaleDateString()}\n\nIssues:\n${issueList.join('\n')}`
+        }]
+      };
+    } catch (error) {
+      handleError(error, 'Failed to fetch sprint issues');
+      throw error;
+    }
+  }
+);
+
+server.tool(
+  'linear_search_teams',
+  {
+    query: z.string().optional().describe('Optional text to search in team names')
+  },
+  async (params) => {
+    try {
+      debugLog('Searching teams with query:', params.query);
+      
+      const teams = await linearClient.teams({
+        ...(params.query && { filter: { name: { contains: params.query } } })
+      });
+
+      if (!teams.nodes.length) {
+        return {
+          content: [{
+            type: 'text',
+            text: 'No teams found.'
+          }]
+        };
+      }
+
+      debugLog(`Found ${teams.nodes.length} teams`);
+
+      const teamList = await Promise.all(
+        teams.nodes.map(async (team) => {
+          const activeMembers = await team.members();
+          return `Team: ${team.name}\nID: ${team.id}\nKey: ${team.key}\nMembers: ${activeMembers.nodes.length}\n`;
+        })
+      );
+
+      return {
+        content: [{
+          type: 'text',
+          text: teamList.join('\n')
+        }]
+      };
+    } catch (error) {
+      handleError(error, 'Failed to search teams');
+      throw error;
+    }
+  }
+);
+
 // Start receiving messages on stdin and sending messages on stdout
 const transport = new StdioServerTransport();
 
@@ -228,6 +345,19 @@ try {
               assigneeId: { type: 'string', description: 'Filter by assignee' },
               priority: { type: 'number', description: 'Priority level (0-4)', minimum: 0, maximum: 4 },
               limit: { type: 'number', description: 'Max results', default: 10 }
+            }
+          },
+          'linear_sprint_issues': {
+            description: 'Get all issues in the current sprint/iteration',
+            parameters: {
+              teamId: { type: 'string', description: 'Team ID to get sprint issues for' }
+            },
+            required: ['teamId']
+          },
+          'linear_search_teams': {
+            description: 'Search and retrieve Linear teams',
+            parameters: {
+              query: { type: 'string', description: 'Optional text to search in team names' }
             }
           }
         }
