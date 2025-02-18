@@ -71,9 +71,9 @@ app.post('/create-ticket', async (req: Request, res: Response, next: NextFunctio
   try {
     const validatedData = createTicketSchema.parse(req.body);
     
-    const issue = await linearClient.issueCreate({
+    const issue = await linearClient.createIssue({
       ...validatedData,
-      teamId: process.env.LINEAR_TEAM_ID,
+      teamId: process.env.LINEAR_TEAM_ID as string,
     });
     
     res.status(201).json(issue);
