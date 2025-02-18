@@ -1,81 +1,63 @@
-# MCP Server
+# Linear MCP Integration Server
 
-This repository contains a local-only MCP server that connects to the Linear API using the Linear TypeScript SDK.
+## Instructing Claude
 
-## Prerequisites
+Copy and paste the following to instruct Claude about this integration:
 
-- Node.js (v14 or higher)
-- npm (v6 or higher)
-- Linear API token
+---
 
-## Setup
+I have a Linear integration server running at http://localhost:3000 that you can use to manage Linear tickets. The server provides the following endpoints:
 
-1. Clone the repository:
-
-   ```sh
-   git clone https://github.com/githubnext/workspace-blank.git
-   cd workspace-blank
-   ```
-
-2. Install dependencies:
-
-   ```sh
-   npm install
-   ```
-
-3. Create a `.env` file in the root directory and add your Linear API token:
-
-   ```sh
-   LINEAR_API_KEY=your_linear_api_token
-   ```
-
-## Running the Server
-
-To start the MCP server, run the following command:
-
-```sh
-npm start
+### List All Issues
+```http
+GET /
 ```
+Returns all issues from the team.
 
-The server will be running at `http://localhost:3000`.
+### Get Current Sprint
+```http
+GET /current-sprint
+```
+Returns the active sprint/cycle details and all its tickets. The response includes:
+- Cycle information (name, start date, end date)
+- All tickets in the current sprint
 
-## Obtaining and Configuring the Linear API Token
-
-To interact with the Linear API, you need to obtain an API token. Follow these steps to get your token:
-
-1. Log in to your Linear account.
-2. Go to the "Settings" page.
-3. Navigate to the "API" section.
-4. Click on "Create New Token" and provide a name for the token.
-5. Copy the generated token and add it to your `.env` file as shown in the setup section.
-
-Make sure to keep your API token secure and do not share it with others.
-
-## Compatibility with Cline or Claude Desktop
-
-To ensure compatibility with Cline or Claude Desktop, follow these steps:
-
-1. Make sure you have the latest version of Cline or Claude Desktop installed on your machine.
-2. Configure the MCP server to run locally on your machine as described in the setup and running sections above.
-3. Ensure that the MCP server is running and accessible at `http://localhost:3000`.
-4. In Cline or Claude Desktop, configure the application to connect to the MCP server at `http://localhost:3000`.
-5. Test the connection and functionality to ensure everything is working as expected.
-
-## Creating a Ticket
-
-To create a ticket, send a POST request to the `/create-ticket` endpoint with the following JSON body:
-
+### Create New Ticket
+```http
+POST /create-ticket
+```
+Creates a new Linear ticket. Required JSON body:
 ```json
 {
-  "title": "Ticket Title",
-  "description": "Ticket Description"
+    "title": "Your ticket title",
+    "description": "Your ticket description",
+    "priority": 0-4,           // optional
+    "labels": ["label1"]       // optional
 }
 ```
 
-The server will respond with the created ticket details.
+### Get Specific Ticket
+```http
+GET /ticket/:id
+```
+Returns details for a specific ticket by ID.
 
-## Searching for a Ticket by ID
+---
 
-To search for a ticket by ID, send a GET request to the `/ticket/:id` endpoint, where `:id` is the ID of the ticket you want to search for.
+## Developer Setup
 
-The server will respond with the ticket details.
+1. Get your Linear API key from Linear's settings > API section
+2. Create a `.env` file in the project root:
+```
+LINEAR_API_KEY=your_api_key_here
+```
+3. Install dependencies:
+```bash
+npm install
+```
+4. Start the server:
+```bash
+npm start
+```
+
+The server includes rate limiting (100 requests per 15 minutes) and proper error handling. Once you see "Environment validation successful" and "MCP server listening at http://localhost:3000", you can provide the above instructions to Claude.

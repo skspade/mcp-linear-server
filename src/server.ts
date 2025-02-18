@@ -5,6 +5,21 @@ import { z } from 'zod';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 
+/*
+ * IMPORTANT: MCP Integration Rule
+ * ------------------------------
+ * When adding new functionality to this server:
+ * 1. Update the README.md file with the new endpoint details
+ * 2. Include the endpoint in the "Instructing Claude" section
+ * 3. Follow the existing format:
+ *    ```http
+ *    METHOD /endpoint
+ *    ```
+ *    Description and any required request body/parameters
+ * 
+ * This ensures Claude can be properly instructed about all available functionality.
+ */
+
 // Load environment variables
 dotenv.config();
 
@@ -124,6 +139,52 @@ app.get('/ticket/:id', async (req: Request, res: Response, next: NextFunction) =
     }
     
     res.json(issue);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/current-sprint', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    let teamId = process.env.LINEAR_TEAM_ID;
+    
+    // If no team ID is provided, get the first team the user has access to
+    if (!teamId) {
+      const teams = await linearClient.teams();
+      const firstTeam = teams.nodes[0];
+      if (!firstTeam) {
+        throw new Error('No teams found for this user');
+      }
+      teamId = firstTeam.id;
+    }
+
+    // Get active cycle for the team
+    const team = await linearClient.team(teamId);
+    const activeCycle = await team.activeCycle;
+    
+    if (!activeCycle) {
+      res.status(404).json({ error: 'No active sprint found' });
+      return;
+    }
+
+    // Get issues for the active cycle
+    const issues = await linearClient.issues({
+      first: 100,
+      filter: {
+        team: { id: { eq: teamId } },
+        cycle: { id: { eq: activeCycle.id } }
+      }
+    });
+    
+    res.json({
+      cycle: {
+        id: activeCycle.id,
+        name: activeCycle.name,
+        startsAt: activeCycle.startsAt,
+        endsAt: activeCycle.endsAt
+      },
+      issues: issues
+    });
   } catch (error) {
     next(error);
   }

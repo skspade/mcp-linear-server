@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "name": "mcp-documentation",
+      "description": "Ensures MCP functionality is documented in README.md",
+      "pattern": {
+        "type": "regex",
+        "value": "app\\.(get|post|put|delete)\\s*\\(['\"]\\/?[^'\"]+['\"]"
+      },
+      "files": ["src/**/*.ts"],
+      "message": "New endpoint detected. Please update the README.md 'Instructing Claude' section with:\n1. The new endpoint details\n2. Required parameters/body\n3. Response format\n\nFollow the existing format:\n```http\nMETHOD /endpoint\n```\nDescription and any required request body/parameters",
+      "severity": "warning",
+      "autofix": false,
+      "requires_manual_review": true,
+      "documentation": {
+        "title": "MCP Documentation Rule",
+        "description": "This rule ensures that all Linear API endpoints are properly documented in the README.md file for Claude's instruction.",
+        "category": "Documentation",
+        "recommended": true,
+        "url": "https://github.com/your-repo/mcp-linear-server#readme"
+      }
+    }
+  ]
+} 
