@@ -1,9 +1,8 @@
-import express, { Request, Response, NextFunction } from 'express';
 import { LinearClient } from '@linear/sdk';
-import bodyParser from 'body-parser';
 import { z } from 'zod';
-import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 /*
  * IMPORTANT: MCP Integration Rule
@@ -20,16 +19,28 @@ import dotenv from 'dotenv';
  * This ensures Claude can be properly instructed about all available functionality.
  */
 
+// Enable debug logging
+const DEBUG = true;
+function debugLog(...args: any[]) {
+  if (DEBUG) {
+    console.error('[DEBUG]', ...args);
+  }
+}
+
+function handleError(error: any, context: string) {
+  console.error(`[ERROR] ${context}:`, error);
+  if (error?.response?.data) {
+    console.error('API Response:', error.response.data);
+  }
+}
+
 // Load environment variables
 dotenv.config();
-
-const app = express();
-const port = process.env.PORT || 3000;
+debugLog('Environment variables loaded');
 
 // Validate environment variables
 const envSchema = z.object({
   LINEAR_API_KEY: z.string().min(1),
-  LINEAR_TEAM_ID: z.string().min(1).optional(),
 });
 
 const envValidation = envSchema.safeParse(process.env);
@@ -37,181 +48,215 @@ if (!envValidation.success) {
   console.error('Environment validation failed:', envValidation.error.errors);
   process.exit(1);
 }
+debugLog('Environment validation successful');
 
-const linearClient = new LinearClient({
-  apiKey: process.env.LINEAR_API_KEY,
-});
-
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later.',
-});
-
-// Middleware
-app.use(bodyParser.json());
-app.use(limiter);
-
-// Input validation schemas
-const createTicketSchema = z.object({
-  title: z.string().min(1).max(256),
-  description: z.string().min(1),
-  priority: z.number().min(0).max(4).optional(),
-  labels: z.array(z.string()).optional(),
-});
-
-// Error handler type
-interface ApiError extends Error {
-  status?: number;
-  code?: string;
+// Initialize Linear client with error handling
+let linearClient: LinearClient;
+try {
+  linearClient = new LinearClient({
+    apiKey: process.env.LINEAR_API_KEY,
+  });
+  debugLog('Linear client initialized');
+} catch (error) {
+  handleError(error, 'Failed to initialize Linear client');
+  process.exit(1);
 }
 
-// Routes
-app.get('/', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    let teamId = process.env.LINEAR_TEAM_ID;
-    
-    // If no team ID is provided, get the first team the user has access to
-    if (!teamId) {
-      const teams = await linearClient.teams();
-      const firstTeam = teams.nodes[0];
-      if (!firstTeam) {
-        throw new Error('No teams found for this user');
-      }
-      teamId = firstTeam.id;
-    }
-
-    const issues = await linearClient.issues({
-      first: 100,
-      filter: {
-        team: { id: { eq: teamId } }
-      }
-    });
-    res.json(issues);
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post('/create-ticket', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const validatedData = createTicketSchema.parse(req.body);
-    
-    let teamId = process.env.LINEAR_TEAM_ID;
-    
-    // If no team ID is provided, get the first team the user has access to
-    if (!teamId) {
-      const teams = await linearClient.teams();
-      const firstTeam = teams.nodes[0];
-      if (!firstTeam) {
-        throw new Error('No teams found for this user');
-      }
-      teamId = firstTeam.id;
-    }
-
-    const issue = await linearClient.createIssue({
-      ...validatedData,
-      teamId,
-    });
-    
-    res.status(201).json(issue);
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      res.status(400).json({ 
-        error: 'Validation error', 
-        details: error.errors 
-      });
-      return;
-    }
-    next(error);
-  }
-});
-
-app.get('/ticket/:id', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { id } = req.params;
-    const issue = await linearClient.issue(id);
-    
-    if (!issue) {
-      res.status(404).json({ error: 'Ticket not found' });
-      return;
-    }
-    
-    res.json(issue);
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get('/current-sprint', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    let teamId = process.env.LINEAR_TEAM_ID;
-    
-    // If no team ID is provided, get the first team the user has access to
-    if (!teamId) {
-      const teams = await linearClient.teams();
-      const firstTeam = teams.nodes[0];
-      if (!firstTeam) {
-        throw new Error('No teams found for this user');
-      }
-      teamId = firstTeam.id;
-    }
-
-    // Get active cycle for the team
-    const team = await linearClient.team(teamId);
-    const activeCycle = await team.activeCycle;
-    
-    if (!activeCycle) {
-      res.status(404).json({ error: 'No active sprint found' });
-      return;
-    }
-
-    // Get issues for the active cycle
-    const issues = await linearClient.issues({
-      first: 100,
-      filter: {
-        team: { id: { eq: teamId } },
-        cycle: { id: { eq: activeCycle.id } }
-      }
-    });
-    
-    res.json({
-      cycle: {
-        id: activeCycle.id,
-        name: activeCycle.name,
-        startsAt: activeCycle.startsAt,
-        endsAt: activeCycle.endsAt
+// Create the MCP server with explicit capabilities
+const server = new McpServer({
+  name: 'linear-mcp-server',
+  version: '1.0.0',
+  capabilities: {
+    tools: {
+      'linear_create_issue': {
+        description: 'Create a new Linear issue',
+        parameters: {
+          title: { type: 'string', description: 'Issue title' },
+          description: { type: 'string', description: 'Issue description (markdown supported)' },
+          teamId: { type: 'string', description: 'Team ID to create issue in' },
+          priority: { type: 'number', description: 'Priority level (0-4)', minimum: 0, maximum: 4 },
+          status: { type: 'string', description: 'Initial status name' }
+        },
+        required: ['title', 'teamId']
       },
-      issues: issues
-    });
-  } catch (error) {
-    next(error);
+      'linear_search_issues': {
+        description: 'Search Linear issues with flexible filtering',
+        parameters: {
+          query: { type: 'string', description: 'Text to search in title/description' },
+          teamId: { type: 'string', description: 'Filter by team' },
+          status: { type: 'string', description: 'Filter by status' },
+          assigneeId: { type: 'string', description: 'Filter by assignee' },
+          priority: { type: 'number', description: 'Priority level (0-4)', minimum: 0, maximum: 4 },
+          limit: { type: 'number', description: 'Max results', default: 10 }
+        }
+      }
+    }
   }
 });
+debugLog('MCP server created');
 
-// Error handling middleware
-app.use((err: ApiError, req: Request, res: Response, next: NextFunction) => {
-  console.error('Error:', err);
-  
-  // Handle Linear API specific errors
-  if (err.code === 'AUTHENTICATION_ERROR') {
-    res.status(401).json({ error: 'Invalid Linear API key' });
-    return;
+// Add Linear tools with improved error handling
+server.tool(
+  'linear_create_issue',
+  {
+    title: z.string().describe('Issue title'),
+    description: z.string().optional().describe('Issue description (markdown supported)'),
+    teamId: z.string().describe('Team ID to create issue in'),
+    priority: z.number().min(0).max(4).optional().describe('Priority level (0-4)'),
+    status: z.string().optional().describe('Initial status name')
+  },
+  async (params) => {
+    try {
+      debugLog('Creating issue with params:', params);
+      const issueResult = await linearClient.createIssue(params);
+      const issueData = await issueResult.issue;
+      
+      if (!issueData) {
+        throw new Error('Issue creation succeeded but returned no data');
+      }
+
+      debugLog('Issue created successfully:', issueData.identifier);
+      return {
+        content: [{
+          type: 'text',
+          text: `Created issue ${issueData.identifier}: ${issueData.title}`
+        }]
+      };
+    } catch (error) {
+      handleError(error, 'Failed to create issue');
+      throw error;
+    }
   }
-  
-  if (err.code === 'NOT_FOUND') {
-    res.status(404).json({ error: 'Resource not found' });
-    return;
+);
+
+server.tool(
+  'linear_search_issues',
+  {
+    query: z.string().optional().describe('Text to search in title/description'),
+    teamId: z.string().optional().describe('Filter by team'),
+    status: z.string().optional().describe('Filter by status'),
+    assigneeId: z.string().optional().describe('Filter by assignee'),
+    priority: z.number().min(0).max(4).optional().describe('Filter by priority'),
+    limit: z.number().default(10).describe('Max results')
+  },
+  async (params) => {
+    try {
+      debugLog('Searching issues with params:', params);
+      const issues = await linearClient.issues({
+        first: params.limit,
+        filter: {
+          ...(params.teamId && { team: { id: { eq: params.teamId } } }),
+          ...(params.status && { state: { name: { eq: params.status } } }),
+          ...(params.assigneeId && { assignee: { id: { eq: params.assigneeId } } }),
+          ...(params.priority !== undefined && { priority: { eq: params.priority } })
+        },
+        ...(params.query && { search: params.query })
+      });
+
+      debugLog(`Found ${issues.nodes.length} issues`);
+      const issueList = await Promise.all(
+        issues.nodes.map(async (issue) => {
+          const state = await issue.state;
+          return `${issue.identifier}: ${issue.title} (${state?.name ?? 'No status'})`;
+        })
+      );
+
+      return {
+        content: [{
+          type: 'text',
+          text: issueList.join('\n')
+        }]
+      };
+    } catch (error) {
+      handleError(error, 'Failed to search issues');
+      throw error;
+    }
   }
+);
+
+// Start receiving messages on stdin and sending messages on stdout
+const transport = new StdioServerTransport();
+
+// Verify Linear API connection before starting server
+try {
+  debugLog('Verifying Linear API connection...');
+  await linearClient.viewer;
+  debugLog('Linear API connection verified');
+} catch (error) {
+  handleError(error, 'Failed to verify Linear API connection');
+  process.exit(1);
+}
+
+// Connect to transport with initialization handling
+try {
+  debugLog('Connecting to MCP transport...');
   
-  // Default error response
-  res.status(err.status || 500).json({
-    error: err.message || 'Internal server error',
+  // Set up message logging
+  transport.onmessage = (message: any) => {
+    debugLog('Received message:', message);
+  };
+  
+  await server.connect(transport);
+  debugLog('MCP server connected and ready');
+  
+  // Send server info
+  transport.send({
+    jsonrpc: '2.0',
+    method: 'server/info',
+    params: {
+      name: 'linear-mcp-server',
+      version: '1.0.0',
+      capabilities: {
+        tools: {
+          'linear_create_issue': {
+            description: 'Create a new Linear issue',
+            parameters: {
+              title: { type: 'string', description: 'Issue title' },
+              description: { type: 'string', description: 'Issue description (markdown supported)' },
+              teamId: { type: 'string', description: 'Team ID to create issue in' },
+              priority: { type: 'number', description: 'Priority level (0-4)', minimum: 0, maximum: 4 },
+              status: { type: 'string', description: 'Initial status name' }
+            },
+            required: ['title', 'teamId']
+          },
+          'linear_search_issues': {
+            description: 'Search Linear issues with flexible filtering',
+            parameters: {
+              query: { type: 'string', description: 'Text to search in title/description' },
+              teamId: { type: 'string', description: 'Filter by team' },
+              status: { type: 'string', description: 'Filter by status' },
+              assigneeId: { type: 'string', description: 'Filter by assignee' },
+              priority: { type: 'number', description: 'Priority level (0-4)', minimum: 0, maximum: 4 },
+              limit: { type: 'number', description: 'Max results', default: 10 }
+            }
+          }
+        }
+      }
+    }
   });
+  
+} catch (error) {
+  handleError(error, 'Failed to connect MCP server');
+  process.exit(1);
+}
+
+// Handle process signals
+process.on('SIGINT', () => {
+  debugLog('Received SIGINT, shutting down...');
+  process.exit(0);
 });
 
-app.listen(port, () => {
-  console.log(`MCP server listening at http://localhost:${port}`);
-  console.log('Environment validation successful');
+process.on('SIGTERM', () => {
+  debugLog('Received SIGTERM, shutting down...');
+  process.exit(0);
+});
+
+// Keep the process alive and handle errors
+process.stdin.resume();
+process.stdin.on('error', (error) => {
+  handleError(error, 'stdin error');
+});
+
+process.stdout.on('error', (error) => {
+  handleError(error, 'stdout error');
 });
