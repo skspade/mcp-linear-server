@@ -19,18 +19,50 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
  * This ensures Claude can be properly instructed about all available functionality.
  */
 
-// Enable debug logging
+// Configuration constants
 const DEBUG = true;
+const API_TIMEOUT_MS = 10000; // 10 second timeout for API calls
+const HEARTBEAT_INTERVAL_MS = 15000; // 15 second heartbeat interval
+const SHUTDOWN_GRACE_PERIOD_MS = 5000; // 5 second grace period for shutdown
+
+// Utility to create a timeout promise
+function createTimeout(ms: number, message: string) {
+  return new Promise((_, reject) => 
+    setTimeout(() => reject(new Error(`Timeout after ${ms}ms: ${message}`)), ms)
+  );
+}
+
+// Utility to wrap promises with timeout
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, context: string): Promise<T> {
+  try {
+    const result = await Promise.race([
+      promise,
+      createTimeout(timeoutMs, context)
+    ]) as T;
+    return result;
+  } catch (error: any) {
+    if (error?.message?.includes('Timeout after')) {
+      debugLog(`Operation timed out: ${context}`);
+    }
+    throw error;
+  }
+}
+
 function debugLog(...args: any[]) {
   if (DEBUG) {
-    console.error('[DEBUG]', ...args);
+    console.error(`[DEBUG][${new Date().toISOString()}]`, ...args);
   }
 }
 
 function handleError(error: any, context: string) {
-  console.error(`[ERROR] ${context}:`, error);
+  const timestamp = new Date().toISOString();
+  console.error(`[ERROR][${timestamp}] ${context}:`, error);
   if (error?.response?.data) {
     console.error('API Response:', error.response.data);
+  }
+  // Log stack trace for unexpected errors
+  if (error instanceof Error) {
+    console.error('Stack trace:', error.stack);
   }
 }
 
@@ -309,17 +341,25 @@ server.tool(
     try {
       debugLog('Filtering sprint issues with params:', params);
       
-      // Get current user info
-      const viewer = await linearClient.viewer;
+      // Get current user info with timeout
+      const viewer = await withTimeout(
+        linearClient.viewer,
+        API_TIMEOUT_MS,
+        'Fetching Linear user info'
+      );
       debugLog('Current user:', viewer.id);
       
-      // Get the team's current cycle (sprint)
-      const cycles = await linearClient.cycles({
-        filter: {
-          team: { id: { eq: params.teamId } },
-          isActive: { eq: true }
-        }
-      });
+      // Get the team's current cycle (sprint) with timeout
+      const cycles = await withTimeout(
+        linearClient.cycles({
+          filter: {
+            team: { id: { eq: params.teamId } },
+            isActive: { eq: true }
+          }
+        }),
+        API_TIMEOUT_MS,
+        'Fetching active cycles'
+      );
       
       if (!cycles.nodes.length) {
         return {
@@ -332,15 +372,19 @@ server.tool(
 
       const currentCycle = cycles.nodes[0];
       
-      // Get filtered issues in the current cycle
-      const issues = await linearClient.issues({
-        filter: {
-          team: { id: { eq: params.teamId } },
-          cycle: { id: { eq: currentCycle.id } },
-          state: { name: { eq: params.status } },
-          assignee: { id: { eq: viewer.id } }
-        }
-      });
+      // Get filtered issues in the current cycle with timeout
+      const issues = await withTimeout(
+        linearClient.issues({
+          filter: {
+            team: { id: { eq: params.teamId } },
+            cycle: { id: { eq: currentCycle.id } },
+            state: { name: { eq: params.status } },
+            assignee: { id: { eq: viewer.id } }
+          }
+        }),
+        API_TIMEOUT_MS,
+        'Fetching filtered sprint issues'
+      );
 
       debugLog(`Found ${issues.nodes.length} matching issues in current sprint`);
 
@@ -353,9 +397,14 @@ server.tool(
         };
       }
 
+      // Process issues with timeout protection for each issue's state fetch
       const issueList = await Promise.all(
         issues.nodes.map(async (issue) => {
-          const state = await issue.state;
+          const state = issue.state ? await withTimeout(
+            issue.state,
+            API_TIMEOUT_MS,
+            `Fetching state for issue ${issue.id}`
+          ) : null;
           return `${issue.identifier}: ${issue.title}\n  Status: ${state?.name ?? 'No status'}\n  URL: ${issue.url}`;
         })
       );
@@ -380,19 +429,36 @@ const transport = new StdioServerTransport();
 transport.onerror = (error: any) => {
   handleError(error, 'Transport error');
   // Don't exit on transport errors, try to recover
+  if (error?.message?.includes('write after end') || error?.message?.includes('pipe broken')) {
+    debugLog('Fatal transport error, initiating shutdown');
+    shutdown();
+  }
 };
 
 // Add timeout handling
 let timeoutHandler: NodeJS.Timeout;
+let heartbeatInterval: NodeJS.Timeout;
 
 // Handle graceful shutdown
 const shutdown = async () => {
   debugLog('Shutting down gracefully...');
-  if (timeoutHandler) {
-    clearTimeout(timeoutHandler);
+  
+  // Clear all intervals
+  if (timeoutHandler) clearTimeout(timeoutHandler);
+  if (heartbeatInterval) clearInterval(heartbeatInterval);
+
+  // Allow time for in-flight requests to complete
+  debugLog(`Waiting ${SHUTDOWN_GRACE_PERIOD_MS}ms for in-flight requests...`);
+  await new Promise(resolve => setTimeout(resolve, SHUTDOWN_GRACE_PERIOD_MS));
+  
+  // Close transport
+  try {
+    await transport.close();
+    debugLog('Transport closed successfully');
+  } catch (error) {
+    handleError(error, 'Transport closure failed');
   }
-  // Allow time for final messages to be sent
-  await new Promise(resolve => setTimeout(resolve, 1000));
+  
   process.exit(0);
 };
 
@@ -400,10 +466,21 @@ const shutdown = async () => {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
+// Add global error handlers
+process.on('uncaughtException', (error: Error) => {
+  handleError(error, 'Uncaught Exception');
+  shutdown();
+});
+
+process.on('unhandledRejection', (reason: any, promise: Promise<any>) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  shutdown();
+});
+
 // Verify Linear API connection before starting server
 try {
   debugLog('Verifying Linear API connection...');
-  await linearClient.viewer;
+  await withTimeout(linearClient.viewer, API_TIMEOUT_MS, 'Linear API connection check');
   debugLog('Linear API connection verified');
 } catch (error) {
   handleError(error, 'Failed to verify Linear API connection');
@@ -417,6 +494,11 @@ try {
   // Handle initialization and messages
   transport.onmessage = async (message: any) => {
     debugLog('Received message:', message);
+    
+    // Reset timeout on any message
+    if (timeoutHandler) {
+      clearTimeout(timeoutHandler);
+    }
     
     if (message?.method === 'initialize') {
       debugLog('Handling initialization request');
@@ -443,11 +525,6 @@ try {
       });
     }
     
-    // Reset timeout on any message
-    if (timeoutHandler) {
-      clearTimeout(timeoutHandler);
-    }
-    
     // Set new timeout
     timeoutHandler = setTimeout(() => {
       debugLog('Connection idle, sending keepalive');
@@ -460,10 +537,28 @@ try {
       } catch (error) {
         handleError(error, 'Failed to send keepalive');
       }
-    }, 30000); // Send keepalive every 30 seconds
+    }, HEARTBEAT_INTERVAL_MS);
   };
 
   await server.connect(transport);
+  
+  // Start regular heartbeat
+  heartbeatInterval = setInterval(() => {
+    try {
+      transport.send({
+        jsonrpc: '2.0',
+        method: 'server/keepalive',
+        params: { timestamp: new Date().toISOString() }
+      });
+    } catch (error: any) {
+      debugLog('Heartbeat failed:', error);
+      // If heartbeat fails multiple times, consider shutting down
+      if (error?.message?.includes('write after end') || error?.message?.includes('pipe broken')) {
+        shutdown();
+      }
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+
   debugLog('MCP server connected and ready');
 } catch (error) {
   handleError(error, 'Failed to connect MCP server');
