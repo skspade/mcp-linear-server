@@ -151,6 +151,13 @@ const server = new McpServer({
           status: { type: 'string', description: 'Status to filter by (e.g. "Pending Prod Release")' }
         },
         required: ['teamId', 'status']
+      },
+      'linear_get_issue_details': {
+        description: 'Get detailed information about a specific issue, including full description',
+        parameters: {
+          issueId: { type: 'string', description: 'Issue ID (e.g., DATA-1284) to fetch details for' }
+        },
+        required: ['issueId']
       }
     }
   }
@@ -426,6 +433,115 @@ server.tool(
       };
     } catch (error) {
       handleError(error, 'Failed to filter sprint issues');
+      throw error;
+    }
+  }
+);
+
+// New tool to get detailed issue information including description
+server.tool(
+  'linear_get_issue_details',
+  {
+    issueId: z.string().describe('Issue ID (e.g., DATA-1284) to fetch details for')
+  },
+  async (params) => {
+    try {
+      debugLog('Fetching detailed information for issue:', params.issueId);
+      
+      // Parse team identifier and issue number from the issue ID
+      const match = params.issueId.match(/^([A-Z]+)-(\d+)$/);
+      if (!match) {
+        throw new Error(`Invalid issue ID format: ${params.issueId}. Expected format: TEAM-NUMBER (e.g., DATA-1284)`);
+      }
+      
+      const [_, teamKey, issueNumber] = match;
+      
+      // Find the team by key
+      const teams = await linearClient.teams({
+        filter: {
+          key: { eq: teamKey }
+        }
+      });
+      
+      if (!teams.nodes.length) {
+        throw new Error(`Team with key "${teamKey}" not found`);
+      }
+      
+      const team = teams.nodes[0];
+      
+      // Find the issue by team and number
+      const issues = await linearClient.issues({
+        filter: {
+          team: { id: { eq: team.id } },
+          number: { eq: parseInt(issueNumber, 10) }
+        }
+      });
+      
+      if (!issues.nodes.length) {
+        throw new Error(`Issue ${params.issueId} not found`);
+      }
+      
+      const issue = issues.nodes[0];
+      
+      // Fetch related data with timeout protection
+      const [state, assignee, labels, subscribers, creator, comments, attachments] = await Promise.all([
+        issue.state ? withTimeout(issue.state, API_TIMEOUT_MS, `Fetching state for issue ${issue.id}`) : null,
+        issue.assignee ? withTimeout(issue.assignee, API_TIMEOUT_MS, `Fetching assignee for issue ${issue.id}`) : null,
+        withTimeout(issue.labels(), API_TIMEOUT_MS, `Fetching labels for issue ${issue.id}`),
+        withTimeout(issue.subscribers(), API_TIMEOUT_MS, `Fetching subscribers for issue ${issue.id}`),
+        issue.creator ? withTimeout(issue.creator, API_TIMEOUT_MS, `Fetching creator for issue ${issue.id}`) : null,
+        withTimeout(issue.comments(), API_TIMEOUT_MS, `Fetching comments for issue ${issue.id}`),
+        withTimeout(issue.attachments(), API_TIMEOUT_MS, `Fetching attachments for issue ${issue.id}`)
+      ]);
+      
+      // Format labels
+      const labelsList = labels.nodes.map(label => label.name).join(', ');
+      
+      // Format metadata section
+      const metadata = [
+        `ID: ${issue.identifier}`,
+        `Title: ${issue.title}`,
+        `Status: ${state?.name ?? 'No status'}`,
+        `Priority: ${issue.priority !== null ? issue.priority : 'Not set'}`,
+        `Assignee: ${assignee?.name ?? 'Unassigned'}`,
+        `Creator: ${creator?.name ?? 'Unknown'}`,
+        `Created: ${new Date(issue.createdAt).toLocaleString()}`,
+        `Updated: ${new Date(issue.updatedAt).toLocaleString()}`,
+        `Labels: ${labelsList || 'None'}`,
+        `Subscribers: ${subscribers.nodes.length}`,
+        `Attachments: ${attachments.nodes.length}`,
+        `URL: ${issue.url}`
+      ].join('\n');
+      
+      // Format full description
+      const description = issue.description ? 
+        `\n\n## Description\n\n${issue.description}` : 
+        '\n\nNo description provided.';
+      
+      // Format comments section if there are any
+      let commentsSection = '';
+      if (comments.nodes.length > 0) {
+        const commentsList = await Promise.all(
+          comments.nodes.map(async (comment) => {
+            const commentUser = await comment.user;
+            return `### Comment by ${commentUser?.name ?? 'Unknown'} (${new Date(comment.createdAt).toLocaleString()})\n\n${comment.body}`;
+          })
+        );
+        
+        commentsSection = `\n\n## Comments (${comments.nodes.length})\n\n${commentsList.join('\n\n---\n\n')}`;
+      }
+      
+      // Combine all sections
+      const fullIssueDetails = `# Issue ${issue.identifier}\n\n## Metadata\n\n${metadata}${description}${commentsSection}`;
+      
+      return {
+        content: [{
+          type: 'text',
+          text: fullIssueDetails
+        }]
+      };
+    } catch (error) {
+      handleError(error, 'Failed to fetch issue details');
       throw error;
     }
   }
