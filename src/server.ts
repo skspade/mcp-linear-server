@@ -32,6 +32,8 @@ const connectionState = {
   isConnected: false,
   reconnectAttempts: 0,
   lastHeartbeat: Date.now(),
+  isPipeActive: true,  // Track pipe state
+  isShuttingDown: false  // Track shutdown state
 };
 
 // Utility to create a timeout promise
@@ -550,13 +552,36 @@ server.tool(
 // Create and configure transport
 const transport = new StdioServerTransport();
 
+// Add pipe error handler
+const handlePipeError = (error: any) => {
+  if (error.code === 'EPIPE') {
+    debugLog('Pipe closed by the other end');
+    connectionState.isPipeActive = false;
+    if (!connectionState.isShuttingDown) {
+      shutdown();
+    }
+    return true;
+  }
+  return false;
+};
+
 transport.onerror = async (error: any) => {
+  // Check for EPIPE first
+  if (handlePipeError(error)) {
+    return;
+  }
+
   handleError(error, 'Transport error');
-  if (connectionState.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+  if (!connectionState.isShuttingDown && connectionState.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
     connectionState.reconnectAttempts++;
     debugLog(`Attempting reconnection (${connectionState.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
     setTimeout(async () => {
       try {
+        if (!connectionState.isPipeActive) {
+          debugLog('Pipe is closed, cannot reconnect');
+          await shutdown();
+          return;
+        }
         await server.connect(transport);
         connectionState.isConnected = true;
         debugLog('Reconnection successful');
@@ -568,8 +593,8 @@ transport.onerror = async (error: any) => {
         }
       }
     }, RECONNECT_DELAY_MS);
-  } else {
-    debugLog('Max reconnection attempts reached, shutting down');
+  } else if (!connectionState.isShuttingDown) {
+    debugLog('Max reconnection attempts reached or shutting down, initiating shutdown');
     await shutdown();
   }
 };
@@ -614,16 +639,30 @@ transport.onmessage = async (message: any) => {
 
 // Handle graceful shutdown
 const shutdown = async () => {
+  if (connectionState.isShuttingDown) {
+    debugLog('Shutdown already in progress');
+    return;
+  }
+  
+  connectionState.isShuttingDown = true;
   debugLog('Shutting down gracefully...');
   
   // Close transport
   try {
-    await transport.close();
-    debugLog('Transport closed successfully');
+    if (connectionState.isPipeActive) {
+      await transport.close();
+      debugLog('Transport closed successfully');
+    } else {
+      debugLog('Transport already closed');
+    }
   } catch (error) {
-    handleError(error, 'Transport closure failed');
+    if (!handlePipeError(error)) {
+      handleError(error, 'Transport closure failed');
+    }
   }
   
+  // Give time for any pending operations to complete
+  await new Promise(resolve => setTimeout(resolve, SHUTDOWN_GRACE_PERIOD_MS));
   process.exit(0);
 };
 
@@ -667,9 +706,13 @@ try {
 // Keep the process alive and handle errors
 process.stdin.resume();
 process.stdin.on('error', (error) => {
-  handleError(error, 'stdin error');
+  if (!handlePipeError(error)) {
+    handleError(error, 'stdin error');
+  }
 });
 
 process.stdout.on('error', (error) => {
-  handleError(error, 'stdout error');
+  if (!handlePipeError(error)) {
+    handleError(error, 'stdout error');
+  }
 });
