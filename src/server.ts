@@ -59,6 +59,38 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, context: s
   }
 }
 
+// Utility for batch processing
+async function processBatch<T, R>(
+  items: T[],
+  batchSize: number,
+  processFn: (item: T) => Promise<R>,
+  onProgress?: (completed: number, total: number) => void
+): Promise<R[]> {
+  const results: R[] = [];
+  
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const batchResults = await Promise.all(
+      batch.map(async (item) => {
+        try {
+          return await processFn(item);
+        } catch (error) {
+          handleError(error, `Batch process error for item: ${JSON.stringify(item)}`);
+          throw error;
+        }
+      })
+    );
+    
+    results.push(...batchResults);
+    
+    if (onProgress) {
+      onProgress(Math.min(i + batchSize, items.length), items.length);
+    }
+  }
+  
+  return results;
+}
+
 function debugLog(...args: any[]) {
   if (DEBUG) {
     console.error(`[DEBUG][${new Date().toISOString()}]`, ...args);
@@ -121,6 +153,21 @@ const server = new McpServer({
           status: { type: 'string', description: 'Initial status name' }
         },
         required: ['title', 'teamId']
+      },
+      'linear_bulk_update_status': {
+        description: 'Update the status of multiple Linear issues at once',
+        parameters: {
+          issueIds: { 
+            type: 'array', 
+            items: { type: 'string' }, 
+            description: 'List of issue IDs to update'
+          },
+          targetStatus: { 
+            type: 'string', 
+            description: 'Target status to set for all issues' 
+          }
+        },
+        required: ['issueIds', 'targetStatus']
       },
       'linear_search_issues': {
         description: 'Search Linear issues with flexible filtering',
@@ -544,6 +591,121 @@ server.tool(
       };
     } catch (error) {
       handleError(error, 'Failed to fetch issue details');
+      throw error;
+    }
+  }
+);
+
+// Add bulk update status tool
+server.tool(
+  'linear_bulk_update_status',
+  {
+    issueIds: z.array(z.string()).describe('List of issue IDs to update'),
+    targetStatus: z.string().describe('Target status to set for all issues')
+  },
+  async (params) => {
+    try {
+      debugLog('Bulk updating issues:', params.issueIds, 'to status:', params.targetStatus);
+      
+      const results = {
+        successful: [] as string[],
+        failed: [] as {id: string, reason: string}[]
+      };
+      
+      // Process issues in batches of 5
+      await processBatch(
+        params.issueIds,
+        5,
+        async (issueId) => {
+          try {
+            // Parse team identifier and issue number
+            const match = issueId.match(/^([A-Z]+)-(\d+)$/);
+            if (!match) {
+              results.failed.push({id: issueId, reason: 'Invalid format'});
+              return;
+            }
+            
+            const [_, teamKey, issueNumber] = match;
+            
+            // Find the team
+            const teams = await linearClient.teams({
+              filter: { key: { eq: teamKey } }
+            });
+            
+            if (!teams.nodes.length) {
+              results.failed.push({id: issueId, reason: `Team "${teamKey}" not found`});
+              return;
+            }
+            
+            // Find the issue
+            const issues = await linearClient.issues({
+              filter: {
+                team: { id: { eq: teams.nodes[0].id } },
+                number: { eq: parseInt(issueNumber, 10) }
+              }
+            });
+            
+            if (!issues.nodes.length) {
+              results.failed.push({id: issueId, reason: 'Issue not found'});
+              return;
+            }
+            
+            // Find the target workflow state
+            const states = await linearClient.workflowStates({
+              filter: {
+                team: { id: { eq: teams.nodes[0].id } },
+                name: { eq: params.targetStatus }
+              }
+            });
+            
+            if (!states.nodes.length) {
+              results.failed.push({
+                id: issueId, 
+                reason: `Status "${params.targetStatus}" not found for team ${teamKey}`
+              });
+              return;
+            }
+            
+            // Update the issue
+            await linearClient.updateIssue(issues.nodes[0].id, {
+              stateId: states.nodes[0].id
+            });
+            
+            results.successful.push(issueId);
+          } catch (error) {
+            handleError(error, `Failed to update issue ${issueId}`);
+            results.failed.push({id: issueId, reason: 'API error'});
+          }
+        },
+        (completed, total) => {
+          debugLog(`Progress: ${completed}/${total} issues processed`);
+        }
+      );
+      
+      // Format response
+      let responseText = '';
+      
+      if (results.successful.length > 0) {
+        responseText += `## Successfully Updated (${results.successful.length})\n\n`;
+        responseText += results.successful.join(', ');
+        responseText += '\n\n';
+      }
+      
+      if (results.failed.length > 0) {
+        responseText += `## Failed Updates (${results.failed.length})\n\n`;
+        results.failed.forEach(item => {
+          responseText += `- ${item.id}: ${item.reason}\n`;
+        });
+      }
+      
+      return {
+        content: [{
+          type: 'text',
+          text: responseText
+        }]
+      };
+    } catch (error) {
+      handleError(error, 'Failed to bulk update issues');
       throw error;
     }
   }

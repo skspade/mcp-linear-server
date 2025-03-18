@@ -36,6 +36,11 @@ Filter current sprint issues by status and automatically filters to the current 
 - `teamId` (required): Team ID to get sprint issues for
 - `status` (required): Status to filter by (e.g. "Pending Prod Release")
 
+### linear_bulk_update_status
+Update the status of multiple Linear issues at once:
+- `issueIds` (required): List of issue IDs to update (e.g. ["ENG-123", "DATA-456"])
+- `targetStatus` (required): Target status to set for all issues (e.g. "In Progress")
+
 ## Developer Setup
 
 1. Get your Linear API key from Linear's settings > API section
