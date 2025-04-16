@@ -1,3 +1,7 @@
+build:
+  dockerfile: Dockerfile
+  dockerBuildPath: ./
+
 startCommand:
   type: stdio
   configSchema:
@@ -11,6 +15,6 @@ startCommand:
   commandFunction: |
     (config) => ({
       command: 'node',
-      args: ['dist/server.js'],
+      args: ['--experimental-specifier-resolution=node', 'dist/server.js'],
       env: { LINEAR_API_KEY: config.linearApiKey }
     })
