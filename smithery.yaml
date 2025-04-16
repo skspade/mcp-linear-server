@@ -1,0 +1,16 @@
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    required:
+      - linearApiKey
+    properties:
+      linearApiKey:
+        type: string
+        description: The API key for the Linear service.
+  commandFunction: |
+    (config) => ({
+      command: 'node',
+      args: ['dist/server.js'],
+      env: { LINEAR_API_KEY: config.linearApiKey }
+    })

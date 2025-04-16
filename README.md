@@ -136,3 +136,48 @@ The server includes comprehensive features for performance and reliability:
 - TypeScript and related development tools
 
 For the complete list of dependencies, see `package.json`.
+
+## Smithery Deployment
+
+This server can be deployed on [Smithery.ai](https://smithery.ai) using the provided configuration files:
+
+### Prerequisites
+
+- A Smithery.ai account
+- Your Linear API key
+
+### Deployment Steps
+
+1. Add this repository to Smithery or claim an existing server
+2. Access the Deployments tab (authenticated owners only)
+3. Configure the deployment with your Linear API key
+4. Deploy the server
+
+### Configuration Files
+
+The repository includes two essential files for Smithery deployment:
+
+1. **Dockerfile**: Defines the server build process
+   - Uses Node.js 18 Alpine as the base image
+   - Installs dependencies and builds the TypeScript code
+   - Sets up the command to run the server
+
+2. **smithery.yaml**: Defines the server startup configuration
+   - Specifies the command to run the server
+   - Defines the required configuration parameters (Linear API key)
+   - Handles environment variable setup
+
+### Testing Locally
+
+You can test the Smithery configuration locally using the MCP Inspector:
+
+```bash
+# Build the Docker image
+docker build -t linear-mcp-server .
+
+# Run the container with your Linear API key
+docker run -e LINEAR_API_KEY=your_api_key_here linear-mcp-server
+
+# Or use the MCP Inspector
+npm run inspect
+```
