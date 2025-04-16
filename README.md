@@ -15,13 +15,16 @@ Creates a new Linear issue with the following parameters:
 - `status` (optional): Initial status name
 
 ### linear_search_issues
-Search Linear issues with flexible filtering:
+Search Linear issues with flexible filtering and pagination support:
 - `query` (optional): Text to search in title/description
 - `teamId` (optional): Filter by team
 - `status` (optional): Filter by status
 - `assigneeId` (optional): Filter by assignee
 - `priority` (optional): Priority level (0-4)
-- `limit` (optional, default: 10): Max results to return
+- `limit` (optional, default: 10): Max results per page
+- `cursor` (optional): Pagination cursor for fetching next page
+- `sortBy` (optional, default: 'updated'): Field to sort by ('created', 'updated', 'priority', 'title')
+- `sortDirection` (optional, default: 'desc'): Sort direction ('asc', 'desc')
 
 ### linear_sprint_issues
 Get all issues in the current sprint/iteration:
@@ -36,10 +39,24 @@ Filter current sprint issues by status and automatically filters to the current 
 - `teamId` (required): Team ID to get sprint issues for
 - `status` (required): Status to filter by (e.g. "Pending Prod Release")
 
+### linear_get_issue_details
+Get detailed information about a specific issue, including full description, comments, and metadata:
+- `issueId` (required): Issue ID (e.g., "DATA-1284") to fetch details for
+
 ### linear_bulk_update_status
 Update the status of multiple Linear issues at once:
 - `issueIds` (required): List of issue IDs to update (e.g. ["ENG-123", "DATA-456"])
 - `targetStatus` (required): Target status to set for all issues (e.g. "In Progress")
+
+### linear_manage_cycle
+Create, update, or get information about Linear cycles (sprints):
+- `action` (required): Action to perform: "create", "update", "get", or "list"
+- `teamId` (required): Team ID to manage cycles for
+- `cycleId` (optional, required for update and get actions): Cycle ID
+- `name` (optional, required for create): Cycle name
+- `startDate` (optional, required for create): Start date in ISO format (YYYY-MM-DD)
+- `endDate` (optional, required for create): End date in ISO format (YYYY-MM-DD)
+- `description` (optional): Cycle description
 
 ## Developer Setup
 
@@ -83,15 +100,32 @@ npm run inspect
 - Supports automatic reconnection with configurable retry attempts
 - Implements heartbeat monitoring for connection health
 - Provides detailed logging in debug mode
+- Features an in-memory caching system for improved performance
+- Supports pagination for handling large result sets
+- Implements batch processing for bulk operations
 
-## Error Handling
+## Performance and Reliability
 
-The server includes comprehensive error handling:
-- API timeout protection
+The server includes comprehensive features for performance and reliability:
+
+### Caching System
+- In-memory caching for frequently accessed data (teams, workflow states)
+- Configurable TTL (Time To Live) for cache entries
+- Automatic cleanup of expired cache entries
+- Cache statistics available in debug mode
+
+### Error Handling
+- API timeout protection with configurable timeouts
 - Automatic reconnection attempts on connection loss
-- Detailed error logging with timestamps
-- Graceful shutdown handling
+- Detailed error logging with timestamps and context
+- Graceful shutdown handling with cleanup
 - Heartbeat monitoring for connection health
+
+### Performance Optimizations
+- Batch processing for bulk operations
+- Pagination support for large result sets
+- Parallel processing with Promise.all for concurrent operations
+- Efficient data fetching with minimal API calls
 
 ## Dependencies
 

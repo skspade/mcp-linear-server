@@ -15,7 +15,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
  *    METHOD /endpoint
  *    ```
  *    Description and any required request body/parameters
- * 
+ *
  * This ensures Claude can be properly instructed about all available functionality.
  */
 
@@ -26,6 +26,8 @@ const HEARTBEAT_INTERVAL_MS = 10000; // Reduced to 10 second heartbeat interval
 const SHUTDOWN_GRACE_PERIOD_MS = 5000; // 5 second grace period for shutdown
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_DELAY_MS = 2000;
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes cache TTL
+const CACHE_CLEANUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes cache cleanup interval
 
 // Connection state tracking
 const connectionState = {
@@ -36,9 +38,118 @@ const connectionState = {
   isShuttingDown: false  // Track shutdown state
 };
 
+// Simple in-memory cache implementation
+interface CacheEntry<T> {
+  value: T;
+  timestamp: number;
+  expiresAt: number;
+}
+
+class SimpleCache {
+  private cache: Map<string, CacheEntry<any>> = new Map();
+  private cleanupInterval: NodeJS.Timeout;
+
+  constructor(cleanupIntervalMs: number = CACHE_CLEANUP_INTERVAL_MS) {
+    // Set up periodic cache cleanup
+    this.cleanupInterval = setInterval(() => {
+      this.cleanup();
+    }, cleanupIntervalMs);
+
+    // Ensure cleanup on process exit
+    process.on('beforeExit', () => {
+      clearInterval(this.cleanupInterval);
+    });
+
+    debugLog('Cache initialized with cleanup interval:', cleanupIntervalMs, 'ms');
+  }
+
+  // Get an item from cache
+  get<T>(key: string): T | null {
+    const entry = this.cache.get(key);
+
+    if (!entry) {
+      return null;
+    }
+
+    // Check if entry has expired
+    if (Date.now() > entry.expiresAt) {
+      this.cache.delete(key);
+      return null;
+    }
+
+    debugLog(`Cache hit for key: ${key}`);
+    return entry.value as T;
+  }
+
+  // Set an item in cache with TTL
+  set<T>(key: string, value: T, ttlMs: number = CACHE_TTL_MS): void {
+    const now = Date.now();
+    this.cache.set(key, {
+      value,
+      timestamp: now,
+      expiresAt: now + ttlMs
+    });
+    debugLog(`Cached key: ${key}, expires in ${ttlMs}ms`);
+  }
+
+  // Remove an item from cache
+  delete(key: string): void {
+    this.cache.delete(key);
+    debugLog(`Deleted cache key: ${key}`);
+  }
+
+  // Clear all cache entries
+  clear(): void {
+    this.cache.clear();
+    debugLog('Cache cleared');
+  }
+
+  // Clean up expired entries
+  cleanup(): void {
+    const now = Date.now();
+    let expiredCount = 0;
+
+    for (const [key, entry] of this.cache.entries()) {
+      if (now > entry.expiresAt) {
+        this.cache.delete(key);
+        expiredCount++;
+      }
+    }
+
+    if (expiredCount > 0) {
+      debugLog(`Cache cleanup: removed ${expiredCount} expired entries`);
+    }
+  }
+
+  // Get cache stats
+  getStats(): { size: number, oldestEntry: number | null, newestEntry: number | null } {
+    let oldestTimestamp: number | null = null;
+    let newestTimestamp: number | null = null;
+
+    for (const entry of this.cache.values()) {
+      if (oldestTimestamp === null || entry.timestamp < oldestTimestamp) {
+        oldestTimestamp = entry.timestamp;
+      }
+
+      if (newestTimestamp === null || entry.timestamp > newestTimestamp) {
+        newestTimestamp = entry.timestamp;
+      }
+    }
+
+    return {
+      size: this.cache.size,
+      oldestEntry: oldestTimestamp,
+      newestEntry: newestTimestamp
+    };
+  }
+}
+
+// Initialize the cache
+const cache = new SimpleCache();
+
 // Utility to create a timeout promise
 function createTimeout(ms: number, message: string) {
-  return new Promise((_, reject) => 
+  return new Promise((_, reject) =>
     setTimeout(() => reject(new Error(`Timeout after ${ms}ms: ${message}`)), ms)
   );
 }
@@ -67,7 +178,7 @@ async function processBatch<T, R>(
   onProgress?: (completed: number, total: number) => void
 ): Promise<R[]> {
   const results: R[] = [];
-  
+
   for (let i = 0; i < items.length; i += batchSize) {
     const batch = items.slice(i, i + batchSize);
     const batchResults = await Promise.all(
@@ -80,14 +191,14 @@ async function processBatch<T, R>(
         }
       })
     );
-    
+
     results.push(...batchResults);
-    
+
     if (onProgress) {
       onProgress(Math.min(i + batchSize, items.length), items.length);
     }
   }
-  
+
   return results;
 }
 
@@ -157,14 +268,14 @@ const server = new McpServer({
       'linear_bulk_update_status': {
         description: 'Update the status of multiple Linear issues at once',
         parameters: {
-          issueIds: { 
-            type: 'array', 
-            items: { type: 'string' }, 
+          issueIds: {
+            type: 'array',
+            items: { type: 'string' },
             description: 'List of issue IDs to update'
           },
-          targetStatus: { 
-            type: 'string', 
-            description: 'Target status to set for all issues' 
+          targetStatus: {
+            type: 'string',
+            description: 'Target status to set for all issues'
           }
         },
         required: ['issueIds', 'targetStatus']
@@ -207,6 +318,23 @@ const server = new McpServer({
           issueId: { type: 'string', description: 'Issue ID (e.g., DATA-1284) to fetch details for' }
         },
         required: ['issueId']
+      },
+      'linear_manage_cycle': {
+        description: 'Create, update, or get information about Linear cycles (sprints)',
+        parameters: {
+          action: {
+            type: 'string',
+            description: 'Action to perform: "create", "update", "get", or "list"',
+            enum: ['create', 'update', 'get', 'list']
+          },
+          teamId: { type: 'string', description: 'Team ID to manage cycles for' },
+          cycleId: { type: 'string', description: 'Cycle ID (required for update and get actions)' },
+          name: { type: 'string', description: 'Cycle name (for create and update)' },
+          startDate: { type: 'string', description: 'Start date in ISO format (for create and update)' },
+          endDate: { type: 'string', description: 'End date in ISO format (for create and update)' },
+          description: { type: 'string', description: 'Cycle description (for create and update)' }
+        },
+        required: ['action', 'teamId']
       }
     }
   }
@@ -228,7 +356,7 @@ server.tool(
       debugLog('Creating issue with params:', params);
       const issueResult = await linearClient.createIssue(params);
       const issueData = await issueResult.issue;
-      
+
       if (!issueData) {
         throw new Error('Issue creation succeeded but returned no data');
       }
@@ -255,12 +383,20 @@ server.tool(
     status: z.string().optional().describe('Filter by status'),
     assigneeId: z.string().optional().describe('Filter by assignee'),
     priority: z.number().min(0).max(4).optional().describe('Filter by priority'),
-    limit: z.number().default(10).describe('Max results')
+    limit: z.number().default(10).describe('Max results per page'),
+    cursor: z.string().optional().describe('Pagination cursor for fetching next page'),
+    sortBy: z.enum(['created', 'updated', 'priority', 'title']).optional().default('updated').describe('Field to sort by'),
+    sortDirection: z.enum(['asc', 'desc']).optional().default('desc').describe('Sort direction')
   },
   async (params) => {
     try {
       debugLog('Searching issues with params:', params);
-      const issues = await linearClient.issues({
+
+      // Determine sort order based on parameters
+      const orderBy = determineIssueOrderBy(params.sortBy, params.sortDirection);
+
+      // Build the query with pagination support
+      const queryParams: any = {
         first: params.limit,
         filter: {
           ...(params.teamId && { team: { id: { eq: params.teamId } } }),
@@ -268,21 +404,47 @@ server.tool(
           ...(params.assigneeId && { assignee: { id: { eq: params.assigneeId } } }),
           ...(params.priority !== undefined && { priority: { eq: params.priority } })
         },
-        ...(params.query && { search: params.query })
-      });
+        ...(params.query && { search: params.query }),
+        orderBy,
+        ...(params.cursor && { after: params.cursor })
+      };
 
-      debugLog(`Found ${issues.nodes.length} issues`);
+      // Execute the query with timeout protection
+      const issues = await withTimeout(
+        linearClient.issues(queryParams),
+        API_TIMEOUT_MS,
+        'Searching issues'
+      );
+
+      debugLog(`Found ${issues.nodes.length} issues, hasNextPage: ${issues.pageInfo.hasNextPage}`);
+
+      // Format the issues with more details
       const issueList = await Promise.all(
         issues.nodes.map(async (issue) => {
-          const state = await issue.state;
-          return `${issue.identifier}: ${issue.title} (${state?.name ?? 'No status'})`;
+          const [state, assignee] = await Promise.all([
+            issue.state ? withTimeout(issue.state, API_TIMEOUT_MS, `Fetching state for issue ${issue.id}`) : null,
+            issue.assignee ? withTimeout(issue.assignee, API_TIMEOUT_MS, `Fetching assignee for issue ${issue.id}`) : null
+          ]);
+
+          const priorityLabel = getPriorityLabel(issue.priority);
+          const assigneeInfo = assignee ? ` | Assignee: ${assignee.name}` : '';
+
+          return `${issue.identifier}: ${issue.title}\n  Status: ${state?.name ?? 'No status'} | Priority: ${priorityLabel}${assigneeInfo}\n  Created: ${new Date(issue.createdAt).toLocaleString()} | Updated: ${new Date(issue.updatedAt).toLocaleString()}\n  URL: ${issue.url}`;
         })
       );
+
+      // Build pagination information
+      const paginationInfo = buildPaginationInfo(issues.pageInfo, params);
+
+      // Combine results and pagination info
+      const resultText = issueList.length > 0
+        ? `${issueList.join('\n\n')}\n\n${paginationInfo}`
+        : `No issues found matching your criteria.\n\n${paginationInfo}`;
 
       return {
         content: [{
           type: 'text',
-          text: issueList.join('\n')
+          text: resultText
         }]
       };
     } catch (error) {
@@ -292,6 +454,219 @@ server.tool(
   }
 );
 
+// Helper function to determine the order by clause for issue queries
+function determineIssueOrderBy(sortBy: string = 'updated', direction: string = 'desc') {
+  const field = sortBy === 'created' ? 'createdAt' :
+                sortBy === 'updated' ? 'updatedAt' :
+                sortBy === 'priority' ? 'priority' :
+                sortBy === 'title' ? 'title' : 'updatedAt';
+
+  return { [field]: direction.toUpperCase() };
+}
+
+// Helper function to get a human-readable priority label
+function getPriorityLabel(priority: number | null): string {
+  if (priority === null) return 'None';
+
+  switch (priority) {
+    case 0: return 'No priority';
+    case 1: return 'Low';
+    case 2: return 'Medium';
+    case 3: return 'High';
+    case 4: return 'Urgent';
+    default: return `Unknown (${priority})`;
+  }
+}
+
+// Helper function to build pagination information text
+function buildPaginationInfo(pageInfo: { hasNextPage: boolean, endCursor?: string }, params: any): string {
+  const paginationLines = ['## Pagination'];
+
+  if (params.cursor) {
+    paginationLines.push('Current page is based on the provided cursor.');
+  } else {
+    paginationLines.push('This is the first page of results.');
+  }
+
+  paginationLines.push(`Results per page: ${params.limit}`);
+
+  if (pageInfo.hasNextPage && pageInfo.endCursor) {
+    paginationLines.push(`\nTo see the next page, use cursor: ${pageInfo.endCursor}`);
+    paginationLines.push('\nExample usage:');
+    paginationLines.push('```');
+    paginationLines.push(`linear_search_issues(query: "${params.query || ''}", teamId: "${params.teamId || ''}", cursor: "${pageInfo.endCursor}")`);
+    paginationLines.push('```');
+  } else {
+    paginationLines.push('\nNo more pages available.');
+  }
+
+  return paginationLines.join('\n');
+}
+
+// Cache-enabled helper functions for frequently accessed data
+
+// Get team by ID with cache support
+async function getTeamById(teamId: string): Promise<any> {
+  const cacheKey = `team:${teamId}`;
+
+  // Try to get from cache first
+  const cachedTeam = cache.get<any>(cacheKey);
+  if (cachedTeam) {
+    return cachedTeam;
+  }
+
+  // Not in cache, fetch from API
+  try {
+    const team = await withTimeout(
+      linearClient.team(teamId),
+      API_TIMEOUT_MS,
+      `Fetching team ${teamId}`
+    );
+
+    if (team) {
+      // Cache the result
+      cache.set(cacheKey, team);
+      return team;
+    }
+
+    throw new Error(`Team with ID ${teamId} not found`);
+  } catch (error) {
+    handleError(error, `Failed to fetch team ${teamId}`);
+    throw error;
+  }
+}
+
+// Get team by key with cache support
+async function getTeamByKey(teamKey: string): Promise<any> {
+  const cacheKey = `team:key:${teamKey}`;
+
+  // Try to get from cache first
+  const cachedTeam = cache.get<any>(cacheKey);
+  if (cachedTeam) {
+    return cachedTeam;
+  }
+
+  // Not in cache, fetch from API
+  try {
+    const teams = await withTimeout(
+      linearClient.teams({
+        filter: { key: { eq: teamKey } }
+      }),
+      API_TIMEOUT_MS,
+      `Fetching team by key ${teamKey}`
+    );
+
+    if (teams.nodes.length > 0) {
+      const team = teams.nodes[0];
+      // Cache the result
+      cache.set(cacheKey, team);
+      // Also cache by ID for future lookups
+      cache.set(`team:${team.id}`, team);
+      return team;
+    }
+
+    throw new Error(`Team with key ${teamKey} not found`);
+  } catch (error) {
+    handleError(error, `Failed to fetch team by key ${teamKey}`);
+    throw error;
+  }
+}
+
+// Get all teams with cache support
+async function getAllTeams(): Promise<any[]> {
+  const cacheKey = 'teams:all';
+
+  // Try to get from cache first
+  const cachedTeams = cache.get<any[]>(cacheKey);
+  if (cachedTeams) {
+    return cachedTeams;
+  }
+
+  // Not in cache, fetch from API
+  try {
+    const teams = await withTimeout(
+      linearClient.teams(),
+      API_TIMEOUT_MS,
+      'Fetching all teams'
+    );
+
+    // Cache the result
+    cache.set(cacheKey, teams.nodes);
+
+    // Also cache individual teams
+    teams.nodes.forEach(team => {
+      cache.set(`team:${team.id}`, team);
+      cache.set(`team:key:${team.key}`, team);
+    });
+
+    return teams.nodes;
+  } catch (error) {
+    handleError(error, 'Failed to fetch all teams');
+    throw error;
+  }
+}
+
+// Get workflow states for a team with cache support
+async function getWorkflowStatesForTeam(teamId: string): Promise<any[]> {
+  const cacheKey = `workflowStates:team:${teamId}`;
+
+  // Try to get from cache first
+  const cachedStates = cache.get<any[]>(cacheKey);
+  if (cachedStates) {
+    return cachedStates;
+  }
+
+  // Not in cache, fetch from API
+  try {
+    const states = await withTimeout(
+      linearClient.workflowStates({
+        filter: { team: { id: { eq: teamId } } }
+      }),
+      API_TIMEOUT_MS,
+      `Fetching workflow states for team ${teamId}`
+    );
+
+    // Cache the result
+    cache.set(cacheKey, states.nodes);
+
+    // Also cache individual states by name for this team
+    states.nodes.forEach(state => {
+      cache.set(`workflowState:team:${teamId}:name:${state.name}`, state);
+    });
+
+    return states.nodes;
+  } catch (error) {
+    handleError(error, `Failed to fetch workflow states for team ${teamId}`);
+    throw error;
+  }
+}
+
+// Get workflow state by name for a team with cache support
+async function getWorkflowStateByName(teamId: string, stateName: string): Promise<any> {
+  const cacheKey = `workflowState:team:${teamId}:name:${stateName}`;
+
+  // Try to get from cache first
+  const cachedState = cache.get<any>(cacheKey);
+  if (cachedState) {
+    return cachedState;
+  }
+
+  // Not in cache, try to get all states for this team (which will cache them individually)
+  try {
+    const states = await getWorkflowStatesForTeam(teamId);
+    const state = states.find(s => s.name === stateName);
+
+    if (state) {
+      return state;
+    }
+
+    throw new Error(`Workflow state "${stateName}" not found for team ${teamId}`);
+  } catch (error) {
+    handleError(error, `Failed to fetch workflow state "${stateName}" for team ${teamId}`);
+    throw error;
+  }
+}
+
 server.tool(
   'linear_sprint_issues',
   {
@@ -300,7 +675,7 @@ server.tool(
   async (params) => {
     try {
       debugLog('Fetching current sprint issues for team:', params.teamId);
-      
+
       // Get the team's current cycle (sprint)
       const team = await linearClient.team(params.teamId);
       const cycles = await linearClient.cycles({
@@ -309,7 +684,7 @@ server.tool(
           isActive: { eq: true }
         }
       });
-      
+
       if (!cycles.nodes.length) {
         return {
           content: [{
@@ -320,7 +695,7 @@ server.tool(
       }
 
       const currentCycle = cycles.nodes[0];
-      
+
       // Get all issues in the current cycle
       const issues = await linearClient.issues({
         filter: {
@@ -360,7 +735,7 @@ server.tool(
   async (params) => {
     try {
       debugLog('Searching teams with query:', params.query);
-      
+
       const teams = await linearClient.teams({
         ...(params.query && { filter: { name: { contains: params.query } } })
       });
@@ -405,7 +780,7 @@ server.tool(
   async (params) => {
     try {
       debugLog('Filtering sprint issues with params:', params);
-      
+
       // Get current user info with timeout
       const viewer = await withTimeout(
         linearClient.viewer,
@@ -413,7 +788,7 @@ server.tool(
         'Fetching Linear user info'
       );
       debugLog('Current user:', viewer.id);
-      
+
       // Get the team's current cycle (sprint) with timeout
       const cycles = await withTimeout(
         linearClient.cycles({
@@ -425,7 +800,7 @@ server.tool(
         API_TIMEOUT_MS,
         'Fetching active cycles'
       );
-      
+
       if (!cycles.nodes.length) {
         return {
           content: [{
@@ -436,7 +811,7 @@ server.tool(
       }
 
       const currentCycle = cycles.nodes[0];
-      
+
       // Get filtered issues in the current cycle with timeout
       const issues = await withTimeout(
         linearClient.issues({
@@ -496,28 +871,28 @@ server.tool(
   async (params) => {
     try {
       debugLog('Fetching detailed information for issue:', params.issueId);
-      
+
       // Parse team identifier and issue number from the issue ID
       const match = params.issueId.match(/^([A-Z]+)-(\d+)$/);
       if (!match) {
         throw new Error(`Invalid issue ID format: ${params.issueId}. Expected format: TEAM-NUMBER (e.g., DATA-1284)`);
       }
-      
+
       const [_, teamKey, issueNumber] = match;
-      
+
       // Find the team by key
       const teams = await linearClient.teams({
         filter: {
           key: { eq: teamKey }
         }
       });
-      
+
       if (!teams.nodes.length) {
         throw new Error(`Team with key "${teamKey}" not found`);
       }
-      
+
       const team = teams.nodes[0];
-      
+
       // Find the issue by team and number
       const issues = await linearClient.issues({
         filter: {
@@ -525,13 +900,13 @@ server.tool(
           number: { eq: parseInt(issueNumber, 10) }
         }
       });
-      
+
       if (!issues.nodes.length) {
         throw new Error(`Issue ${params.issueId} not found`);
       }
-      
+
       const issue = issues.nodes[0];
-      
+
       // Fetch related data with timeout protection
       const [state, assignee, labels, subscribers, creator, comments, attachments] = await Promise.all([
         issue.state ? withTimeout(issue.state, API_TIMEOUT_MS, `Fetching state for issue ${issue.id}`) : null,
@@ -542,10 +917,10 @@ server.tool(
         withTimeout(issue.comments(), API_TIMEOUT_MS, `Fetching comments for issue ${issue.id}`),
         withTimeout(issue.attachments(), API_TIMEOUT_MS, `Fetching attachments for issue ${issue.id}`)
       ]);
-      
+
       // Format labels
       const labelsList = labels.nodes.map(label => label.name).join(', ');
-      
+
       // Format metadata section
       const metadata = [
         `ID: ${issue.identifier}`,
@@ -561,12 +936,12 @@ server.tool(
         `Attachments: ${attachments.nodes.length}`,
         `URL: ${issue.url}`
       ].join('\n');
-      
+
       // Format full description
-      const description = issue.description ? 
-        `\n\n## Description\n\n${issue.description}` : 
+      const description = issue.description ?
+        `\n\n## Description\n\n${issue.description}` :
         '\n\nNo description provided.';
-      
+
       // Format comments section if there are any
       let commentsSection = '';
       if (comments.nodes.length > 0) {
@@ -576,13 +951,13 @@ server.tool(
             return `### Comment by ${commentUser?.name ?? 'Unknown'} (${new Date(comment.createdAt).toLocaleString()})\n\n${comment.body}`;
           })
         );
-        
+
         commentsSection = `\n\n## Comments (${comments.nodes.length})\n\n${commentsList.join('\n\n---\n\n')}`;
       }
-      
+
       // Combine all sections
       const fullIssueDetails = `# Issue ${issue.identifier}\n\n## Metadata\n\n${metadata}${description}${commentsSection}`;
-      
+
       return {
         content: [{
           type: 'text',
@@ -606,12 +981,12 @@ server.tool(
   async (params) => {
     try {
       debugLog('Bulk updating issues:', params.issueIds, 'to status:', params.targetStatus);
-      
+
       const results = {
         successful: [] as string[],
         failed: [] as {id: string, reason: string}[]
       };
-      
+
       // Process issues in batches of 5
       await processBatch(
         params.issueIds,
@@ -624,53 +999,56 @@ server.tool(
               results.failed.push({id: issueId, reason: 'Invalid format'});
               return;
             }
-            
+
             const [_, teamKey, issueNumber] = match;
-            
-            // Find the team
-            const teams = await linearClient.teams({
-              filter: { key: { eq: teamKey } }
-            });
-            
-            if (!teams.nodes.length) {
+
+            // Find the team using cache-enabled helper
+            let team;
+            try {
+              team = await getTeamByKey(teamKey);
+            } catch (error) {
               results.failed.push({id: issueId, reason: `Team "${teamKey}" not found`});
               return;
             }
-            
+
             // Find the issue
-            const issues = await linearClient.issues({
-              filter: {
-                team: { id: { eq: teams.nodes[0].id } },
-                number: { eq: parseInt(issueNumber, 10) }
-              }
-            });
-            
+            const issues = await withTimeout(
+              linearClient.issues({
+                filter: {
+                  team: { id: { eq: team.id } },
+                  number: { eq: parseInt(issueNumber, 10) }
+                }
+              }),
+              API_TIMEOUT_MS,
+              `Fetching issue ${issueId}`
+            );
+
             if (!issues.nodes.length) {
               results.failed.push({id: issueId, reason: 'Issue not found'});
               return;
             }
-            
-            // Find the target workflow state
-            const states = await linearClient.workflowStates({
-              filter: {
-                team: { id: { eq: teams.nodes[0].id } },
-                name: { eq: params.targetStatus }
-              }
-            });
-            
-            if (!states.nodes.length) {
+
+            // Find the target workflow state using cache-enabled helper
+            let workflowState;
+            try {
+              workflowState = await getWorkflowStateByName(team.id, params.targetStatus);
+            } catch (error) {
               results.failed.push({
-                id: issueId, 
+                id: issueId,
                 reason: `Status "${params.targetStatus}" not found for team ${teamKey}`
               });
               return;
             }
-            
+
             // Update the issue
-            await linearClient.updateIssue(issues.nodes[0].id, {
-              stateId: states.nodes[0].id
-            });
-            
+            await withTimeout(
+              linearClient.updateIssue(issues.nodes[0].id, {
+                stateId: workflowState.id
+              }),
+              API_TIMEOUT_MS,
+              `Updating issue ${issueId}`
+            );
+
             results.successful.push(issueId);
           } catch (error) {
             handleError(error, `Failed to update issue ${issueId}`);
@@ -681,23 +1059,36 @@ server.tool(
           debugLog(`Progress: ${completed}/${total} issues processed`);
         }
       );
-      
+
       // Format response
       let responseText = '';
-      
+
       if (results.successful.length > 0) {
         responseText += `## Successfully Updated (${results.successful.length})\n\n`;
         responseText += results.successful.join(', ');
         responseText += '\n\n';
       }
-      
+
       if (results.failed.length > 0) {
         responseText += `## Failed Updates (${results.failed.length})\n\n`;
         results.failed.forEach(item => {
           responseText += `- ${item.id}: ${item.reason}\n`;
         });
       }
-      
+
+      // Add cache stats to the response in debug mode
+      if (DEBUG) {
+        const cacheStats = cache.getStats();
+        responseText += `\n\n## Cache Statistics (Debug)\n`;
+        responseText += `Cache size: ${cacheStats.size} entries\n`;
+        if (cacheStats.oldestEntry) {
+          responseText += `Oldest entry: ${new Date(cacheStats.oldestEntry).toLocaleString()}\n`;
+        }
+        if (cacheStats.newestEntry) {
+          responseText += `Newest entry: ${new Date(cacheStats.newestEntry).toLocaleString()}\n`;
+        }
+      }
+
       return {
         content: [{
           type: 'text',
@@ -710,6 +1101,276 @@ server.tool(
     }
   }
 );
+
+// Add cycle management tool
+server.tool(
+  'linear_manage_cycle',
+  {
+    action: z.enum(['create', 'update', 'get', 'list']).describe('Action to perform'),
+    teamId: z.string().describe('Team ID to manage cycles for'),
+    cycleId: z.string().optional().describe('Cycle ID (required for update and get actions)'),
+    name: z.string().optional().describe('Cycle name (for create and update)'),
+    startDate: z.string().optional().describe('Start date in ISO format (for create and update)'),
+    endDate: z.string().optional().describe('End date in ISO format (for create and update)'),
+    description: z.string().optional().describe('Cycle description (for create and update)')
+  },
+  async (params) => {
+    try {
+      debugLog('Managing cycle with params:', params);
+
+      // Validate parameters based on action
+      if ((params.action === 'update' || params.action === 'get') && !params.cycleId) {
+        throw new Error(`cycleId is required for ${params.action} action`);
+      }
+
+      if (params.action === 'create' && (!params.name || !params.startDate || !params.endDate)) {
+        throw new Error('name, startDate, and endDate are required for create action');
+      }
+
+      if (params.action === 'update' && !params.cycleId) {
+        throw new Error('cycleId is required for update action');
+      }
+
+      // Validate date formats if provided
+      if (params.startDate && isNaN(Date.parse(params.startDate))) {
+        throw new Error('Invalid startDate format. Use ISO format (YYYY-MM-DD)');
+      }
+
+      if (params.endDate && isNaN(Date.parse(params.endDate))) {
+        throw new Error('Invalid endDate format. Use ISO format (YYYY-MM-DD)');
+      }
+
+      // Execute the requested action
+      switch (params.action) {
+        case 'create':
+          return await createCycle(params);
+        case 'update':
+          return await updateCycle(params);
+        case 'get':
+          return await getCycle(params);
+        case 'list':
+          return await listCycles(params);
+        default:
+          throw new Error(`Unsupported action: ${params.action}`);
+      }
+    } catch (error) {
+      handleError(error, `Failed to ${params.action} cycle`);
+      throw error;
+    }
+  }
+);
+
+// Helper function to create a new cycle
+async function createCycle(params: any) {
+  // Verify the team exists
+  const team = await withTimeout(
+    linearClient.team(params.teamId),
+    API_TIMEOUT_MS,
+    'Fetching team for cycle creation'
+  );
+
+  if (!team) {
+    throw new Error(`Team with ID ${params.teamId} not found`);
+  }
+
+  // Create the cycle
+  const cycleData = {
+    teamId: params.teamId,
+    name: params.name,
+    startsAt: new Date(params.startDate).toISOString(),
+    endsAt: new Date(params.endDate).toISOString(),
+    description: params.description || ''
+  };
+
+  const cycleResult = await withTimeout(
+    linearClient.createCycle(cycleData),
+    API_TIMEOUT_MS,
+    'Creating new cycle'
+  );
+
+  const cycle = await cycleResult.cycle;
+
+  if (!cycle) {
+    throw new Error('Cycle creation succeeded but returned no data');
+  }
+
+  debugLog('Cycle created successfully:', cycle.id);
+
+  return {
+    content: [{
+      type: 'text',
+      text: `Created cycle "${cycle.name}" for team ${team.name}\nID: ${cycle.id}\nStart: ${new Date(cycle.startsAt).toLocaleDateString()}\nEnd: ${new Date(cycle.endsAt).toLocaleDateString()}`
+    }]
+  };
+}
+
+// Helper function to update an existing cycle
+async function updateCycle(params: any) {
+  // Verify the cycle exists
+  const cycle = await withTimeout(
+    linearClient.cycle(params.cycleId),
+    API_TIMEOUT_MS,
+    'Fetching cycle for update'
+  );
+
+  if (!cycle) {
+    throw new Error(`Cycle with ID ${params.cycleId} not found`);
+  }
+
+  // Build update data with only provided fields
+  const updateData: any = {};
+
+  if (params.name) updateData.name = params.name;
+  if (params.startDate) updateData.startsAt = new Date(params.startDate).toISOString();
+  if (params.endDate) updateData.endsAt = new Date(params.endDate).toISOString();
+  if (params.description !== undefined) updateData.description = params.description;
+
+  // Update the cycle
+  await withTimeout(
+    linearClient.updateCycle(params.cycleId, updateData),
+    API_TIMEOUT_MS,
+    'Updating cycle'
+  );
+
+  // Fetch the updated cycle
+  const updatedCycle = await withTimeout(
+    linearClient.cycle(params.cycleId),
+    API_TIMEOUT_MS,
+    'Fetching updated cycle'
+  );
+
+  const team = await updatedCycle.team;
+
+  return {
+    content: [{
+      type: 'text',
+      text: `Updated cycle "${updatedCycle.name}" for team ${team.name}\nID: ${updatedCycle.id}\nStart: ${new Date(updatedCycle.startsAt).toLocaleDateString()}\nEnd: ${new Date(updatedCycle.endsAt).toLocaleDateString()}\nDescription: ${updatedCycle.description || 'None'}`
+    }]
+  };
+}
+
+// Helper function to get cycle details
+async function getCycle(params: any) {
+  // Fetch the cycle
+  const cycle = await withTimeout(
+    linearClient.cycle(params.cycleId),
+    API_TIMEOUT_MS,
+    'Fetching cycle details'
+  );
+
+  if (!cycle) {
+    throw new Error(`Cycle with ID ${params.cycleId} not found`);
+  }
+
+  // Fetch related data
+  const [team, issues] = await Promise.all([
+    withTimeout(cycle.team, API_TIMEOUT_MS, 'Fetching cycle team'),
+    withTimeout(
+      linearClient.issues({
+        filter: {
+          cycle: { id: { eq: cycle.id } }
+        }
+      }),
+      API_TIMEOUT_MS,
+      'Fetching cycle issues'
+    )
+  ]);
+
+  // Calculate cycle progress
+  const completedIssues = issues.nodes.filter(issue => issue.completedAt !== null);
+  const progressPercentage = issues.nodes.length > 0
+    ? Math.round((completedIssues.length / issues.nodes.length) * 100)
+    : 0;
+
+  // Format cycle details
+  const cycleDetails = [
+    `# Cycle: ${cycle.name}`,
+    `\n## Details`,
+    `Team: ${team.name}`,
+    `ID: ${cycle.id}`,
+    `Start Date: ${new Date(cycle.startsAt).toLocaleDateString()}`,
+    `End Date: ${new Date(cycle.endsAt).toLocaleDateString()}`,
+    `Status: ${cycle.isActive ? 'Active' : 'Inactive'}${cycle.isCompleted ? ' (Completed)' : ''}`,
+    `Progress: ${progressPercentage}% (${completedIssues.length}/${issues.nodes.length} issues completed)`,
+    `Description: ${cycle.description || 'None'}`,
+    `\n## Issues (${issues.nodes.length})`,
+  ].join('\n');
+
+  // Add issue list if there are any
+  let issuesList = '';
+  if (issues.nodes.length > 0) {
+    const formattedIssues = await Promise.all(
+      issues.nodes.map(async (issue) => {
+        const state = await issue.state;
+        const assignee = await issue.assignee;
+        return `- ${issue.identifier}: ${issue.title} (${state?.name ?? 'No status'})${assignee ? ` - Assigned to: ${assignee.name}` : ''}`;
+      })
+    );
+
+    issuesList = '\n\n' + formattedIssues.join('\n');
+  } else {
+    issuesList = '\n\nNo issues in this cycle.';
+  }
+
+  return {
+    content: [{
+      type: 'text',
+      text: cycleDetails + issuesList
+    }]
+  };
+}
+
+// Helper function to list cycles for a team
+async function listCycles(params: any) {
+  // Verify the team exists
+  const team = await withTimeout(
+    linearClient.team(params.teamId),
+    API_TIMEOUT_MS,
+    'Fetching team for cycle listing'
+  );
+
+  if (!team) {
+    throw new Error(`Team with ID ${params.teamId} not found`);
+  }
+
+  // Fetch all cycles for the team
+  const cycles = await withTimeout(
+    linearClient.cycles({
+      filter: {
+        team: { id: { eq: params.teamId } }
+      }
+    }),
+    API_TIMEOUT_MS,
+    'Fetching team cycles'
+  );
+
+  if (!cycles.nodes.length) {
+    return {
+      content: [{
+        type: 'text',
+        text: `No cycles found for team ${team.name}.`
+      }]
+    };
+  }
+
+  // Sort cycles by start date (newest first)
+  const sortedCycles = [...cycles.nodes].sort(
+    (a, b) => new Date(b.startsAt).getTime() - new Date(a.startsAt).getTime()
+  );
+
+  // Format the cycles list
+  const cyclesList = sortedCycles.map(cycle => {
+    const status = cycle.isActive ? 'ACTIVE' : (cycle.isCompleted ? 'COMPLETED' : 'UPCOMING');
+    return `- ${cycle.name} (${status})\n  ID: ${cycle.id}\n  Period: ${new Date(cycle.startsAt).toLocaleDateString()} to ${new Date(cycle.endsAt).toLocaleDateString()}`;
+  }).join('\n\n');
+
+  return {
+    content: [{
+      type: 'text',
+      text: `# Cycles for Team: ${team.name}\n\n${cyclesList}`
+    }]
+  };
+}
 
 // Create and configure transport
 const transport = new StdioServerTransport();
@@ -764,7 +1425,7 @@ transport.onerror = async (error: any) => {
 transport.onmessage = async (message: any) => {
   try {
     debugLog('Received message:', message?.method);
-    
+
     if (message?.method === 'initialize') {
       debugLog('Handling initialize request');
       connectionState.isConnected = true;
@@ -805,10 +1466,10 @@ const shutdown = async () => {
     debugLog('Shutdown already in progress');
     return;
   }
-  
+
   connectionState.isShuttingDown = true;
   debugLog('Shutting down gracefully...');
-  
+
   // Close transport
   try {
     if (connectionState.isPipeActive) {
@@ -822,7 +1483,7 @@ const shutdown = async () => {
       handleError(error, 'Transport closure failed');
     }
   }
-  
+
   // Give time for any pending operations to complete
   await new Promise(resolve => setTimeout(resolve, SHUTDOWN_GRACE_PERIOD_MS));
   process.exit(0);
@@ -856,9 +1517,9 @@ try {
 // Connect to transport with initialization handling
 try {
   debugLog('Connecting to MCP transport...');
-  
+
   await server.connect(transport);
-  
+
   debugLog('MCP server connected and ready');
 } catch (error) {
   handleError(error, 'Failed to connect MCP server');
