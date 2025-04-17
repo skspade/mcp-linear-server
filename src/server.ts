@@ -1177,8 +1177,8 @@ async function createCycle(params: any) {
   const cycleData = {
     teamId: params.teamId,
     name: params.name,
-    startsAt: new Date(params.startDate).toISOString(),
-    endsAt: new Date(params.endDate).toISOString(),
+    startsAt: new Date(params.startDate),
+    endsAt: new Date(params.endDate),
     description: params.description || ''
   };
 
@@ -1198,7 +1198,7 @@ async function createCycle(params: any) {
 
   return {
     content: [{
-      type: 'text',
+      type: "text" as const,
       text: `Created cycle "${cycle.name}" for team ${team.name}\nID: ${cycle.id}\nStart: ${new Date(cycle.startsAt).toLocaleDateString()}\nEnd: ${new Date(cycle.endsAt).toLocaleDateString()}`
     }]
   };
@@ -1243,8 +1243,8 @@ async function updateCycle(params: any) {
 
   return {
     content: [{
-      type: 'text',
-      text: `Updated cycle "${updatedCycle.name}" for team ${team.name}\nID: ${updatedCycle.id}\nStart: ${new Date(updatedCycle.startsAt).toLocaleDateString()}\nEnd: ${new Date(updatedCycle.endsAt).toLocaleDateString()}\nDescription: ${updatedCycle.description || 'None'}`
+      type: "text" as const,
+      text: `Updated cycle "${updatedCycle.name}" for team ${team?.name || 'Unknown'}\nID: ${updatedCycle.id}\nStart: ${new Date(updatedCycle.startsAt).toLocaleDateString()}\nEnd: ${new Date(updatedCycle.endsAt).toLocaleDateString()}\nDescription: ${updatedCycle.description || 'None'}`
     }]
   };
 }
@@ -1264,7 +1264,7 @@ async function getCycle(params: any) {
 
   // Fetch related data
   const [team, issues] = await Promise.all([
-    withTimeout(cycle.team, API_TIMEOUT_MS, 'Fetching cycle team'),
+    cycle.team ? withTimeout(cycle.team, API_TIMEOUT_MS, 'Fetching cycle team') : Promise.resolve(null),
     withTimeout(
       linearClient.issues({
         filter: {
@@ -1286,11 +1286,11 @@ async function getCycle(params: any) {
   const cycleDetails = [
     `# Cycle: ${cycle.name}`,
     `\n## Details`,
-    `Team: ${team.name}`,
+    `Team: ${team?.name || 'Unknown'}`,
     `ID: ${cycle.id}`,
     `Start Date: ${new Date(cycle.startsAt).toLocaleDateString()}`,
     `End Date: ${new Date(cycle.endsAt).toLocaleDateString()}`,
-    `Status: ${cycle.isActive ? 'Active' : 'Inactive'}${cycle.isCompleted ? ' (Completed)' : ''}`,
+    `Status: ${new Date() >= new Date(cycle.startsAt) && new Date() <= new Date(cycle.endsAt) ? 'Active' : 'Inactive'}${new Date() > new Date(cycle.endsAt) ? ' (Completed)' : ''}`,
     `Progress: ${progressPercentage}% (${completedIssues.length}/${issues.nodes.length} issues completed)`,
     `Description: ${cycle.description || 'None'}`,
     `\n## Issues (${issues.nodes.length})`,
@@ -1314,7 +1314,7 @@ async function getCycle(params: any) {
 
   return {
     content: [{
-      type: 'text',
+      type: "text" as const,
       text: cycleDetails + issuesList
     }]
   };
@@ -1347,7 +1347,7 @@ async function listCycles(params: any) {
   if (!cycles.nodes.length) {
     return {
       content: [{
-        type: 'text',
+        type: "text" as const,
         text: `No cycles found for team ${team.name}.`
       }]
     };
@@ -1360,13 +1360,16 @@ async function listCycles(params: any) {
 
   // Format the cycles list
   const cyclesList = sortedCycles.map(cycle => {
-    const status = cycle.isActive ? 'ACTIVE' : (cycle.isCompleted ? 'COMPLETED' : 'UPCOMING');
+    const now = new Date();
+    const startDate = new Date(cycle.startsAt);
+    const endDate = new Date(cycle.endsAt);
+    const status = (now >= startDate && now <= endDate) ? 'ACTIVE' : (now > endDate ? 'COMPLETED' : 'UPCOMING');
     return `- ${cycle.name} (${status})\n  ID: ${cycle.id}\n  Period: ${new Date(cycle.startsAt).toLocaleDateString()} to ${new Date(cycle.endsAt).toLocaleDateString()}`;
   }).join('\n\n');
 
   return {
     content: [{
-      type: 'text',
+      type: "text" as const,
       text: `# Cycles for Team: ${team.name}\n\n${cyclesList}`
     }]
   };
