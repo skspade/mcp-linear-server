@@ -1,5 +1,7 @@
 # Linear MCP Integration Server
 
+[![smithery badge](https://smithery.ai/badge/@skspade/mcp-linear-management-server)](https://smithery.ai/server/@skspade/mcp-linear-management-server)
+
 This server provides Linear integration capabilities through the Model Context Protocol (MCP). It allows AI models to interact with Linear for issue tracking and project management.
 
 ## Features
