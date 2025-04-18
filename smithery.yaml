@@ -11,6 +11,6 @@ startCommand:
   commandFunction: |
     (config) => ({
       command: 'node',
-      args: ['--experimental-specifier-resolution=node', 'dist/server.js'],
+      args: ['--import', 'tsx', 'src/server.ts'],
       env: { LINEAR_API_KEY: config.linearApiKey }
     })

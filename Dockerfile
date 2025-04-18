@@ -1,4 +1,4 @@
-FROM node:18-alpine
+FROM node:23-alpine
 
 WORKDIR /app
 
@@ -11,8 +11,8 @@ RUN npm install
 # Copy source code
 COPY . .
 
-# Build TypeScript code
-RUN npm run build
+# No need for the build step anymore when using direct TS execution
+# RUN npm run build
 
-# Run the server
-CMD ["node", "dist/server.js"]
+# Run the TypeScript server directly
+CMD ["node", "--import", "tsx", "src/server.ts"]

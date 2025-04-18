@@ -1,10 +1,10 @@
 import dotenv from 'dotenv';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
-import {connectToTransport, createTransport} from './server/transport';
-import {setupGlobalErrorHandlers} from './server/connection';
-import {registerAllTools} from './tools';
-import {initializeLinearClient, verifyLinearApiConnection} from './linear';
-import {debugLog, handleError} from './utils';
+import {connectToTransport, createTransport} from './server/transport.js';
+import {setupGlobalErrorHandlers} from './server/connection.js';
+import {registerAllTools} from './tools.js';
+import {initializeLinearClient, verifyLinearApiConnection} from './linear.js';
+import {debugLog, handleError} from './utils.js';
 
 // Load environment variables from .env file
 dotenv.config();
