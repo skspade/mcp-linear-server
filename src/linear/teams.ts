@@ -1,5 +1,5 @@
-import {getLinearClient} from './client';
-import {API_TIMEOUT_MS, handleError, SimpleCache, withTimeout} from '../utils';
+import {getLinearClient} from './client.js';
+import {API_TIMEOUT_MS, handleError, SimpleCache, withTimeout} from '../utils/index.js';
 
 // Initialize cache
 const cache = new SimpleCache();
@@ -107,7 +107,7 @@ export async function getAllTeams(): Promise<any[]> {
         cache.set(cacheKey, teams.nodes);
 
         // Also cache individual teams
-        teams.nodes.forEach(team => {
+        teams.nodes.forEach((team: any) => {
             cache.set(`team:${team.id}`, team);
             cache.set(`team:key:${team.key}`, team);
         });

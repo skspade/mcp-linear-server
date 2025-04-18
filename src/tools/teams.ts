@@ -1,7 +1,7 @@
 import {z} from 'zod';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
-import {getLinearClient} from '../linear';
-import {API_TIMEOUT_MS, debugLog, handleError, withTimeout} from '../utils';
+import {getLinearClient} from '../linear/index.js';
+import {API_TIMEOUT_MS, debugLog, handleError, withTimeout} from '../utils/index.js';
 
 /**
  * Register team-related tools with the MCP server
@@ -34,7 +34,7 @@ export function registerTeamTools(server: McpServer): void {
                 debugLog(`Found ${teams.nodes.length} teams`);
 
                 const teamList = await Promise.all(
-                    teams.nodes.map(async (team) => {
+                    teams.nodes.map(async (team: any) => {
                         const activeMembers = await team.members();
                         return `Team: ${team.name}\nID: ${team.id}\nKey: ${team.key}\nMembers: ${activeMembers.nodes.length}\n`;
                     })
@@ -94,9 +94,9 @@ export function registerTeamTools(server: McpServer): void {
                 debugLog(`Found ${issues.nodes.length} issues in current sprint`);
 
                 const issueList = await Promise.all(
-                    issues.nodes.map(async (issue) => {
-                        const state = await issue.state;
-                        const assignee = await issue.assignee;
+                    issues.nodes.map(async (issue: any) => {
+                        const state = await issue.state as { name: string } | null;
+                        const assignee = await issue.assignee as { name: string } | null;
                         return `${issue.identifier}: ${issue.title} (${state?.name ?? 'No status'})${assignee ? ` - Assigned to: ${assignee.name}` : ''}`;
                     })
                 );
@@ -183,12 +183,12 @@ export function registerTeamTools(server: McpServer): void {
 
                 // Process issues with timeout protection for each issue's state fetch
                 const issueList = await Promise.all(
-                    issues.nodes.map(async (issue) => {
+                    issues.nodes.map(async (issue: any) => {
                         const state = issue.state ? await withTimeout(
                             issue.state,
                             API_TIMEOUT_MS,
                             `Fetching state for issue ${issue.id}`
-                        ) : null;
+                        ) as { name: string } : null;
                         return `${issue.identifier}: ${issue.title}\n  Status: ${state?.name ?? 'No status'}\n  URL: ${issue.url}`;
                     })
                 );

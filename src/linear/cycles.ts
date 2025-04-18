@@ -1,5 +1,5 @@
-import {getLinearClient} from './client';
-import {API_TIMEOUT_MS, withTimeout} from '../utils';
+import {getLinearClient} from './client.js';
+import {API_TIMEOUT_MS, withTimeout} from '../utils/index.js';
 
 /**
  * Create a new cycle
@@ -121,7 +121,7 @@ export async function getCycle(params: any) {
     ]);
 
     // Calculate cycle progress
-    const completedIssues = issues.nodes.filter(issue => issue.completedAt !== null);
+    const completedIssues = issues.nodes.filter((issue: any) => issue.completedAt !== null);
     const progressPercentage = issues.nodes.length > 0
         ? Math.round((completedIssues.length / issues.nodes.length) * 100)
         : 0;

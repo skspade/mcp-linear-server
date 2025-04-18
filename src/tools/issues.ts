@@ -7,8 +7,8 @@ import {
     getPriorityLabel,
     getTeamByKey,
     getWorkflowStateByName
-} from '../linear';
-import {API_TIMEOUT_MS, debugLog, handleError, processBatch, withTimeout} from '../utils';
+} from '../linear/index.js';
+import {API_TIMEOUT_MS, debugLog, handleError, processBatch, withTimeout} from '../utils/index.js';
 
 /**
  * Register issue-related tools with the MCP server
@@ -95,11 +95,11 @@ export function registerIssueTools(server: McpServer): void {
 
                 // Format the issues with more details
                 const issueList = await Promise.all(
-                    issues.nodes.map(async (issue) => {
+                    issues.nodes.map(async (issue: any) => {
                         const [state, assignee] = await Promise.all([
                             issue.state ? withTimeout(issue.state, API_TIMEOUT_MS, `Fetching state for issue ${issue.id}`) : null,
                             issue.assignee ? withTimeout(issue.assignee, API_TIMEOUT_MS, `Fetching assignee for issue ${issue.id}`) : null
-                        ]);
+                        ]) as [{ name: string } | null, { name: string } | null];
 
                         const priorityLabel = getPriorityLabel(issue.priority);
                         const assigneeInfo = assignee ? ` | Assignee: ${assignee.name}` : '';
@@ -186,7 +186,7 @@ export function registerIssueTools(server: McpServer): void {
                 ]);
 
                 // Format labels
-                const labelsList = labels.nodes.map(label => label.name).join(', ');
+                const labelsList = labels.nodes.map((label: any) => label.name).join(', ');
 
                 // Format metadata section
                 const metadata = [
@@ -213,7 +213,7 @@ export function registerIssueTools(server: McpServer): void {
                 let commentsSection = '';
                 if (comments.nodes.length > 0) {
                     const commentsList = await Promise.all(
-                        comments.nodes.map(async (comment) => {
+                        comments.nodes.map(async (comment: any) => {
                             const commentUser = await comment.user;
                             return `### Comment by ${commentUser?.name ?? 'Unknown'} (${new Date(comment.createdAt).toLocaleString()})\n\n${comment.body}`;
                         })
@@ -258,7 +258,7 @@ export function registerIssueTools(server: McpServer): void {
                 await processBatch(
                     params.issueIds,
                     5,
-                    async (issueId) => {
+                    async (issueId: string) => {
                         try {
                             // Parse team identifier and issue number
                             const match = issueId.match(/^([A-Z]+)-(\d+)$/);
@@ -322,7 +322,7 @@ export function registerIssueTools(server: McpServer): void {
                             results.failed.push({id: issueId, reason: 'API error'});
                         }
                     },
-                    (completed, total) => {
+                    (completed: number, total: number) => {
                         debugLog(`Progress: ${completed}/${total} issues processed`);
                     }
                 );

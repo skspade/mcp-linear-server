@@ -1,7 +1,7 @@
 import {LinearClient} from '@linear/sdk';
 import {z} from 'zod';
 import dotenv from 'dotenv';
-import {API_TIMEOUT_MS, handleError, withTimeout} from '../utils';
+import {API_TIMEOUT_MS, handleError, withTimeout} from '../utils/index.js';
 
 // Load environment variables
 dotenv.config();

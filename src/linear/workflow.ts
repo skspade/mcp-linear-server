@@ -1,5 +1,5 @@
-import {getLinearClient} from './client';
-import {API_TIMEOUT_MS, handleError, SimpleCache, withTimeout} from '../utils';
+import {getLinearClient} from './client.js';
+import {API_TIMEOUT_MS, handleError, SimpleCache, withTimeout} from '../utils/index.js';
 
 // Initialize cache
 const cache = new SimpleCache();
@@ -33,7 +33,7 @@ export async function getWorkflowStatesForTeam(teamId: string): Promise<any[]> {
         cache.set(cacheKey, states.nodes);
 
         // Also cache individual states by name for this team
-        states.nodes.forEach(state => {
+        states.nodes.forEach((state: any) => {
             cache.set(`workflowState:team:${teamId}:name:${state.name}`, state);
         });
 

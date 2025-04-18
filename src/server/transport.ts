@@ -1,8 +1,8 @@
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
-import {debugLog, handleError} from '../utils';
-import {HEARTBEAT_INTERVAL_MS, MAX_RECONNECT_ATTEMPTS, RECONNECT_DELAY_MS} from './config';
-import {connectionState, handlePipeError, shutdown} from './connection';
+import {debugLog, handleError} from '../utils/index.js';
+import {HEARTBEAT_INTERVAL_MS, MAX_RECONNECT_ATTEMPTS, RECONNECT_DELAY_MS} from './config.js';
+import {connectionState, handlePipeError, shutdown} from './connection.js';
 
 /**
  * Configure and create the transport for the MCP server

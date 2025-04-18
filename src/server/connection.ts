@@ -1,5 +1,5 @@
-import {debugLog, handleError} from '../utils';
-import {SHUTDOWN_GRACE_PERIOD_MS} from './config';
+import {debugLog, handleError} from '../utils/index.js';
+import {SHUTDOWN_GRACE_PERIOD_MS} from './config.js';
 
 // Connection state tracking
 export const connectionState = {

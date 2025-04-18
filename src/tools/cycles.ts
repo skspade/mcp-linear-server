@@ -1,7 +1,7 @@
 import {z} from 'zod';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
-import {createCycle, getCycle, listCycles, updateCycle} from '../linear';
-import {debugLog, handleError} from '../utils';
+import {createCycle, getCycle, listCycles, updateCycle} from '../linear/index.js';
+import {debugLog, handleError} from '../utils/index.js';
 
 /**
  * Register cycle-related tools with the MCP server
@@ -87,7 +87,7 @@ export function registerCycleTools(server: McpServer): void {
                         let issuesList = '';
                         if (result.issues.length > 0) {
                             const formattedIssues = await Promise.all(
-                                result.issues.map(async (issue) => {
+                                result.issues.map(async (issue: any) => {
                                     const state = await issue.state;
                                     const assignee = await issue.assignee;
                                     return `- ${issue.identifier}: ${issue.title} (${state?.name ?? 'No status'})${assignee ? ` - Assigned to: ${assignee.name}` : ''}`;
@@ -119,7 +119,7 @@ export function registerCycleTools(server: McpServer): void {
                         }
 
                         // Format the cycles list
-                        const cyclesList = result.cycles.map(cycle => {
+                        const cyclesList = result.cycles.map((cycle: any) => {
                             const now = new Date();
                             const startDate = new Date(cycle.startsAt);
                             const endDate = new Date(cycle.endsAt);

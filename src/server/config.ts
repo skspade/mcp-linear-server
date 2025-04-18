@@ -1,7 +1,7 @@
 // Configuration constants for the server
 
 // Re-export API_TIMEOUT_MS from utils/timeout
-export {API_TIMEOUT_MS} from '../utils/timeout';
+export {API_TIMEOUT_MS} from '../utils/timeout.js';
 
 // Server-specific configuration
 export const HEARTBEAT_INTERVAL_MS = 10000; // 10 second heartbeat interval

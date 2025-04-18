@@ -1,4 +1,4 @@
-import {handleError} from './logging';
+import {handleError} from './logging.js';
 
 /**
  * Process items in batches with progress reporting

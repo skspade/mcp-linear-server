@@ -1,4 +1,4 @@
-import {handleError} from './logging';
+import {handleError} from './logging.js';
 
 // Default timeout for API calls
 export const API_TIMEOUT_MS = 30000; // 30 seconds

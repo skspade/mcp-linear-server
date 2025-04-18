@@ -1,6 +1,6 @@
 // Export all Linear API interaction functions from a single module
-export * from './client';
-export * from './teams';
-export * from './workflow';
-export * from './cycles';
-export * from './issues';
+export * from './client.js';
+export * from './teams.js';
+export * from './workflow.js';
+export * from './cycles.js';
+export * from './issues.js';
